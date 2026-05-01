@@ -1,0 +1,13 @@
+# binary
+tgconn
+
+# runtime data
+.tgconn/
+
+# Go
+*.test
+*.out
+vendor/
+
+# macOS
+.DS_Store
