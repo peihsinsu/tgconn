@@ -67,6 +67,35 @@ func TestLoad_DefaultTimeout(t *testing.T) {
 	}
 }
 
+func TestValidate_InvalidExecMode(t *testing.T) {
+	cfg := &Config{Token: "tok", Provider: "claude", AllowedChats: []int64{123}, ExecMode: "turbo"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for invalid exec-mode")
+	}
+}
+
+func TestValidate_ValidExecModes(t *testing.T) {
+	for _, mode := range []string{ExecModeAuto, ExecModeAsk, ExecModeSafe} {
+		cfg := &Config{Token: "tok", Provider: "claude", AllowedChats: []int64{123}, ExecMode: mode}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("unexpected error for mode %q: %v", mode, err)
+		}
+	}
+}
+
+func TestLoad_DefaultExecMode(t *testing.T) {
+	defer reset()
+	viper.Set("token", "tok")
+	viper.Set("provider", "claude")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.ExecMode != ExecModeAsk {
+		t.Errorf("expected default exec-mode %q, got %q", ExecModeAsk, cfg.ExecMode)
+	}
+}
+
 func TestLoad_ParseAllowedChats_CSV(t *testing.T) {
 	defer reset()
 	viper.Set("allowed_chats", []string{"111", "222", "333"})

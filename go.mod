@@ -3,6 +3,7 @@ module github.com/cx009/tgconn
 go 1.24.7
 
 require (
+	github.com/creack/pty v1.1.24 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1 // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect

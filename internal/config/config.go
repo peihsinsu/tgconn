@@ -9,6 +9,12 @@ import (
 	"github.com/spf13/viper"
 )
 
+const (
+	ExecModeAuto = "auto"
+	ExecModeAsk  = "ask"
+	ExecModeSafe = "safe"
+)
+
 type Config struct {
 	Token        string
 	Provider     string
@@ -16,6 +22,8 @@ type Config struct {
 	Timeout      time.Duration
 	Debug        bool
 	HistorySize  int
+	EnableVoice  bool
+	ExecMode     string
 }
 
 func Load() (*Config, error) {
@@ -25,12 +33,17 @@ func Load() (*Config, error) {
 		Timeout:     time.Duration(viper.GetInt("timeout")) * time.Second,
 		Debug:       viper.GetBool("debug"),
 		HistorySize: viper.GetInt("history_size"),
+		EnableVoice: viper.GetBool("enable_voice"),
+		ExecMode:    viper.GetString("exec_mode"),
 	}
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 15 * time.Minute
 	}
 	if cfg.HistorySize == 0 {
 		cfg.HistorySize = 10
+	}
+	if cfg.ExecMode == "" {
+		cfg.ExecMode = ExecModeAsk
 	}
 	for _, s := range viper.GetStringSlice("allowed_chats") {
 		s = strings.TrimSpace(s)
@@ -54,6 +67,11 @@ func (c *Config) Validate() error {
 	}
 	if len(c.AllowedChats) == 0 {
 		return fmt.Errorf("at least one allowed chat ID is required (use --allow-chat or set allowed_chats in config)")
+	}
+	switch c.ExecMode {
+	case ExecModeAuto, ExecModeAsk, ExecModeSafe, "":
+	default:
+		return fmt.Errorf("invalid exec-mode %q; valid values: auto, ask, safe", c.ExecMode)
 	}
 	return nil
 }

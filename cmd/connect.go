@@ -14,6 +14,7 @@ import (
 	"github.com/cx009/tgconn/internal/config"
 	"github.com/cx009/tgconn/internal/provider"
 	"github.com/cx009/tgconn/internal/recorder"
+	"github.com/cx009/tgconn/internal/transcriber"
 )
 
 var connectCmd = &cobra.Command{
@@ -26,10 +27,14 @@ func init() {
 	connectCmd.Flags().StringSlice("allow-chat", nil, "allowed Telegram chat IDs (repeatable or comma-separated)")
 	connectCmd.Flags().Int("timeout", 0, "LLM provider execution timeout in seconds (default 900)")
 	connectCmd.Flags().Int("history-size", 0, "number of past Q&A exchanges to inject as context (default 10, 0 = disable)")
+	connectCmd.Flags().Bool("enable-voice", false, "enable voice message transcription via whisper CLI")
+	connectCmd.Flags().String("exec-mode", "ask", "execution mode: auto (skip all prompts), ask (Telegram approval), safe (auto-deny dangerous ops)")
 
 	_ = viper.BindPFlag("allowed_chats", connectCmd.Flags().Lookup("allow-chat"))
 	_ = viper.BindPFlag("timeout", connectCmd.Flags().Lookup("timeout"))
 	_ = viper.BindPFlag("history_size", connectCmd.Flags().Lookup("history-size"))
+	_ = viper.BindPFlag("enable_voice", connectCmd.Flags().Lookup("enable-voice"))
+	_ = viper.BindPFlag("exec_mode", connectCmd.Flags().Lookup("exec-mode"))
 
 	rootCmd.AddCommand(connectCmd)
 }
@@ -51,6 +56,7 @@ func runConnect(_ *cobra.Command, _ []string) error {
 
 	slog.Info("configuration loaded",
 		"provider", cfg.Provider,
+		"exec_mode", cfg.ExecMode,
 		"allowed_chats_count", len(cfg.AllowedChats),
 		"timeout", cfg.Timeout,
 		"debug", cfg.Debug,
@@ -67,6 +73,15 @@ func runConnect(_ *cobra.Command, _ []string) error {
 		return err
 	}
 	slog.Info("provider binary ready", "provider", cfg.Provider)
+
+	if cfg.EnableVoice {
+		slog.Info("checking whisper binary for voice transcription")
+		if err := transcriber.Check(); err != nil {
+			slog.Error("whisper binary not found", "error", err)
+			return err
+		}
+		slog.Info("whisper binary ready")
+	}
 
 	rec, err := recorder.New()
 	if err != nil {
