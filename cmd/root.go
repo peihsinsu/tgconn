@@ -39,14 +39,15 @@ func initConfig() {
 	} else {
 		home, err := os.UserHomeDir()
 		if err == nil {
-			viper.AddConfigPath(filepath.Join(home, ".tgconn"))
+			viper.AddConfigPath(filepath.Join(home, ".config", "tgconn"))
 		}
 		viper.SetConfigName("config")
 		viper.SetConfigType("yaml")
 	}
 	viper.SetEnvPrefix("TGCONN")
 	viper.AutomaticEnv()
-	// TELEGRAM_BOT_TOKEN is a conventional env var name, not prefixed with TGCONN_
+	// These env vars use their conventional names rather than TGCONN_ prefix.
 	_ = viper.BindEnv("token", "TELEGRAM_BOT_TOKEN")
+	_ = viper.BindEnv("anthropic_api_key", "ANTHROPIC_API_KEY")
 	_ = viper.ReadInConfig()
 }

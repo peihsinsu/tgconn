@@ -15,6 +15,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"github.com/cx009/tgconn/internal/config"
+	"github.com/cx009/tgconn/internal/cronjob"
 	"github.com/cx009/tgconn/internal/downloader"
 	"github.com/cx009/tgconn/internal/provider"
 	"github.com/cx009/tgconn/internal/recorder"
@@ -34,6 +35,7 @@ type job struct {
 	startedAt time.Time
 	cancel    context.CancelFunc
 	stopped   bool
+	isCron    bool
 }
 
 type pendingApproval struct {
@@ -59,6 +61,10 @@ type Bot struct {
 
 	sessionsMu sync.Mutex
 	sessions   map[int64]*session.Session
+
+	cronMgr    *cronjob.Manager
+	cronCtx    context.Context
+	cronCancel context.CancelFunc
 }
 
 func New(cfg *config.Config, p provider.Provider, rec *recorder.Recorder) (*Bot, error) {
@@ -68,7 +74,9 @@ func New(cfg *config.Config, p provider.Provider, rec *recorder.Recorder) (*Bot,
 	}
 	slog.Info("telegram API connection established", "bot_username", api.Self.UserName)
 	hostname, _ := os.Hostname()
-	return &Bot{
+
+	cronCtx, cronCancel := context.WithCancel(context.Background())
+	b := &Bot{
 		api:              api,
 		provider:         p,
 		config:           cfg,
@@ -79,7 +87,17 @@ func New(cfg *config.Config, p provider.Provider, rec *recorder.Recorder) (*Bot,
 		hostname:         hostname,
 		pendingApprovals: make(map[string]*pendingApproval),
 		sessions:         make(map[int64]*session.Session),
-	}, nil
+		cronCtx:          cronCtx,
+		cronCancel:       cronCancel,
+	}
+
+	mgr, err := cronjob.New(".tgconn/cron", b.triggerCronJob)
+	if err != nil {
+		cronCancel()
+		return nil, fmt.Errorf("failed to init cron manager: %w", err)
+	}
+	b.cronMgr = mgr
+	return b, nil
 }
 
 func (b *Bot) Start(ctx context.Context) error {
@@ -96,6 +114,12 @@ func (b *Bot) Start(ctx context.Context) error {
 
 	slog.Info("polling for updates", "poll_timeout_sec", u.Timeout)
 	b.broadcast(fmt.Sprintf("✅ 已連線，provider: %s  模式: %s", b.config.Provider, b.config.ExecMode))
+
+	b.cronMgr.Start()
+	defer func() {
+		b.cronMgr.Stop()
+		b.cronCancel()
+	}()
 
 	go b.sessionIdleSweep(ctx)
 
@@ -161,8 +185,6 @@ loop:
 	return nil
 }
 
-const waitingNoticeDelay = 30 * time.Second
-const waitingNoticeMsg = "⏳ 正在處理，請稍候..."
 const progressNoticeInterval = 3 * time.Minute
 
 func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
@@ -233,34 +255,47 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 		b.cmdHistory(msg.Chat.ID)
 		return
 	}
+	if strings.HasPrefix(question, "/cron") && (len(question) == 5 || question[5] == ' ') {
+		b.cmdCron(msg, strings.TrimSpace(question[5:]))
+		return
+	}
 
 	b.executeAndReply(ctx, msg, question, question)
 }
 
 // executeAndReply runs the LLM provider and sends the result back to the chat.
+// Immediately ACKs with a job ID, then pushes the result when done.
 // displayQuestion is stored in the job tracker and recorder (human-readable description).
 // rawPrompt is the content sent to the LLM; history context is injected inside this function.
 func (b *Bot) executeAndReply(ctx context.Context, msg *tgbotapi.Message, displayQuestion, rawPrompt string) {
 	fromUser := senderName(msg)
+	chatID := msg.Chat.ID
 
 	slog.Info("handling message",
-		"chat_id", msg.Chat.ID,
+		"chat_id", chatID,
 		"from", fromUser,
 		"message_id", msg.MessageID,
 		"question_runes", utf8.RuneCountInString(displayQuestion),
 	)
-	slog.Debug("prompt text", "chat_id", msg.Chat.ID, "raw_prompt", rawPrompt)
+	slog.Debug("prompt text", "chat_id", chatID, "raw_prompt", rawPrompt)
 
 	callCtx, cancel := context.WithTimeout(ctx, b.config.Timeout)
 	callCtx = provider.WithExecMode(callCtx, b.config.ExecMode)
 	if b.config.ExecMode == config.ExecModeAsk {
-		callCtx = provider.WithApproval(callCtx, b.makeApprovalFunc(msg.Chat.ID))
+		callCtx = provider.WithApproval(callCtx, b.makeApprovalFunc(chatID))
 	}
-	j := b.addJob(msg.Chat.ID, fromUser, displayQuestion, cancel)
+	j, err := b.addJob(chatID, fromUser, displayQuestion, false, cancel)
+	if err != nil {
+		cancel()
+		b.send(chatID, fmt.Sprintf("❌ %v", err))
+		return
+	}
 	defer func() {
 		cancel()
 		b.removeJob(j.id)
 	}()
+
+	b.send(chatID, fmt.Sprintf("⚙️ 處理中 #%d，完成後通知你。取消：/stop %d", j.id, j.id))
 
 	type result struct {
 		response string
@@ -269,11 +304,10 @@ func (b *Bot) executeAndReply(ctx context.Context, msg *tgbotapi.Message, displa
 	resultCh := make(chan result, 1)
 	start := time.Now()
 
-	prompt := b.buildPrompt(msg.Chat.ID, rawPrompt)
-
+	prompt := b.buildPrompt(chatID, rawPrompt)
 	slog.Info("invoking provider",
 		"provider", b.config.Provider,
-		"chat_id", msg.Chat.ID,
+		"chat_id", chatID,
 		"job_id", j.id,
 		"timeout", b.config.Timeout,
 		"history_injected", prompt != rawPrompt,
@@ -283,38 +317,23 @@ func (b *Bot) executeAndReply(ctx context.Context, msg *tgbotapi.Message, displa
 		resultCh <- result{resp, err}
 	}()
 
-	waitTimer := time.NewTimer(waitingNoticeDelay)
-	defer waitTimer.Stop()
+	ticker := time.NewTicker(progressNoticeInterval)
+	defer ticker.Stop()
 
 	var res result
-	select {
-	case res = <-resultCh:
-	case <-waitTimer.C:
-		slog.Info("provider slow — sending waiting notice",
-			"chat_id", msg.Chat.ID,
-			"job_id", j.id,
-			"elapsed", time.Since(start).Round(time.Second),
-		)
-		b.send(msg.Chat.ID, waitingNoticeMsg)
-		ticker := time.NewTicker(progressNoticeInterval)
-		defer ticker.Stop()
-		waiting := true
-		for waiting {
-			select {
-			case res = <-resultCh:
-				waiting = false
-			case <-ticker.C:
-				elapsed := time.Since(start).Round(time.Second)
-				slog.Info("provider still running — sending progress notice",
-					"chat_id", msg.Chat.ID,
-					"job_id", j.id,
-					"elapsed", elapsed,
-				)
-				b.send(msg.Chat.ID, fmt.Sprintf("⏳ 仍在執行中（已等 %s）...", elapsed))
-			}
+	for {
+		select {
+		case res = <-resultCh:
+			goto done
+		case <-ticker.C:
+			elapsed := time.Since(start).Round(time.Second)
+			slog.Info("provider still running — sending progress notice",
+				"chat_id", chatID, "job_id", j.id, "elapsed", elapsed,
+			)
+			b.send(chatID, fmt.Sprintf("⏳ #%d 仍在執行中（已等 %s）...", j.id, elapsed))
 		}
 	}
-
+done:
 	elapsed := time.Since(start).Round(time.Millisecond)
 
 	b.jobsMu.Lock()
@@ -323,47 +342,160 @@ func (b *Bot) executeAndReply(ctx context.Context, msg *tgbotapi.Message, displa
 
 	if res.err != nil {
 		if wasStopped {
-			slog.Info("job stopped by user", "chat_id", msg.Chat.ID, "job_id", j.id, "elapsed", elapsed)
-			b.send(msg.Chat.ID, fmt.Sprintf("🛑 指令 #%d 已停止（執行了 %s）", j.id, elapsed))
+			slog.Info("job stopped by user", "chat_id", chatID, "job_id", j.id, "elapsed", elapsed)
+			b.send(chatID, fmt.Sprintf("🛑 #%d 已停止（執行了 %s）", j.id, elapsed))
 			b.record(recorder.Entry{
-				Time: start, ChatID: msg.Chat.ID, From: fromUser,
+				Time: start, ChatID: chatID, From: fromUser,
 				Question: displayQuestion, Error: "stopped by user", ElapsedMs: elapsed.Milliseconds(),
 			})
 			return
 		}
 		slog.Error("provider error",
-			"chat_id", msg.Chat.ID, "from", fromUser, "job_id", j.id, "elapsed", elapsed, "error", res.err,
+			"chat_id", chatID, "from", fromUser, "job_id", j.id, "elapsed", elapsed, "error", res.err,
 		)
-		b.send(msg.Chat.ID, fmt.Sprintf("error: %v", res.err))
+		b.send(chatID, fmt.Sprintf("❌ #%d 失敗（%s）：%v", j.id, elapsed.Round(time.Second), res.err))
 		b.record(recorder.Entry{
-			Time: start, ChatID: msg.Chat.ID, From: fromUser,
+			Time: start, ChatID: chatID, From: fromUser,
 			Question: displayQuestion, Error: res.err.Error(), ElapsedMs: elapsed.Milliseconds(),
 		})
 		return
 	}
 
+	elapsed = elapsed.Round(time.Second)
 	chunks := splitMessage(res.response)
 	slog.Info("provider response ready",
-		"chat_id", msg.Chat.ID, "job_id", j.id, "elapsed", elapsed,
+		"chat_id", chatID, "job_id", j.id, "elapsed", elapsed,
 		"response_runes", utf8.RuneCountInString(res.response), "chunks", len(chunks),
 	)
 
+	b.send(chatID, fmt.Sprintf("✅ #%d 完成（耗時 %s）", j.id, elapsed))
 	for i, chunk := range chunks {
 		if len(chunks) > 1 {
-			b.send(msg.Chat.ID, fmt.Sprintf("[%d/%d]\n%s", i+1, len(chunks), chunk))
+			b.send(chatID, fmt.Sprintf("[%d/%d]\n%s", i+1, len(chunks), chunk))
 		} else {
-			b.send(msg.Chat.ID, chunk)
+			b.send(chatID, chunk)
 		}
 	}
 
 	b.record(recorder.Entry{
-		Time: start, ChatID: msg.Chat.ID, From: fromUser,
+		Time: start, ChatID: chatID, From: fromUser,
 		Question: displayQuestion, Response: res.response, ElapsedMs: elapsed.Milliseconds(),
 	})
-
 	slog.Info("message handled",
-		"chat_id", msg.Chat.ID, "message_id", msg.MessageID, "job_id", j.id, "elapsed", elapsed,
+		"chat_id", chatID, "message_id", msg.MessageID, "job_id", j.id, "elapsed", elapsed,
 	)
+}
+
+// ── Cron jobs ─────────────────────────────────────────────────────────────────
+
+// triggerCronJob is the callback fired by the cron scheduler.
+// Runs unattended: uses auto exec mode (no approval prompts).
+func (b *Bot) triggerCronJob(chatID int64, jobID, expr, prompt string) {
+	callCtx, cancel := context.WithTimeout(b.cronCtx, b.config.Timeout)
+	callCtx = provider.WithExecMode(callCtx, config.ExecModeAuto)
+
+	j, err := b.addJob(chatID, "cron", fmt.Sprintf("[排程] %s", prompt), true, cancel)
+	if err != nil {
+		cancel()
+		slog.Warn("cron job skipped due to rate limit", "cron_id", jobID, "error", err)
+		b.send(chatID, fmt.Sprintf("⏰ 排程 %s 跳過：%v", jobID, err))
+		return
+	}
+	b.send(chatID, fmt.Sprintf("⏰ 排程任務 #%d 開始執行...", j.id))
+	slog.Info("cron job triggered", "chat_id", chatID, "job_id", j.id, "cron_id", jobID)
+
+	go func() {
+		defer func() {
+			cancel()
+			b.removeJob(j.id)
+		}()
+
+		start := time.Now()
+		resp, err := b.provider.Execute(callCtx, prompt)
+		elapsed := time.Since(start).Round(time.Second)
+
+		entry := recorder.CronEntry{
+			Time:      start,
+			ChatID:    chatID,
+			JobID:     jobID,
+			Expr:      expr,
+			Prompt:    prompt,
+			ElapsedMs: elapsed.Milliseconds(),
+		}
+
+		if err != nil {
+			slog.Error("cron job failed", "job_id", j.id, "cron_id", jobID, "elapsed", elapsed, "error", err)
+			b.send(chatID, fmt.Sprintf("❌ 排程任務 #%d 失敗（%s）：%v", j.id, elapsed, err))
+			entry.Error = err.Error()
+			b.recordCron(entry)
+			return
+		}
+
+		slog.Info("cron job completed", "job_id", j.id, "cron_id", jobID, "elapsed", elapsed)
+		b.send(chatID, fmt.Sprintf("✅ 排程任務 #%d 完成（耗時 %s）", j.id, elapsed))
+		chunks := splitMessage(resp)
+		for i, chunk := range chunks {
+			if len(chunks) > 1 {
+				b.send(chatID, fmt.Sprintf("[%d/%d]\n%s", i+1, len(chunks), chunk))
+			} else {
+				b.send(chatID, chunk)
+			}
+		}
+		entry.Response = resp
+		b.recordCron(entry)
+	}()
+}
+
+// cmdCron dispatches /cron subcommands.
+func (b *Bot) cmdCron(msg *tgbotapi.Message, args string) {
+	chatID := msg.Chat.ID
+
+	switch {
+	case args == "list" || args == "":
+		b.cmdCronList(chatID)
+	case strings.HasPrefix(args, "del "):
+		id := strings.TrimSpace(args[4:])
+		if id == "" {
+			b.send(chatID, "用法：/cron del <id>")
+			return
+		}
+		if err := b.cronMgr.Delete(id); err != nil {
+			b.send(chatID, fmt.Sprintf("❌ 刪除失敗：%v", err))
+			return
+		}
+		b.send(chatID, fmt.Sprintf("🗑 排程 %s 已刪除", id))
+	default:
+		expr, prompt, err := cronjob.ParseArgs(args)
+		if err != nil {
+			b.send(chatID, fmt.Sprintf("❌ %v", err))
+			return
+		}
+		j, err := b.cronMgr.Add(chatID, expr, prompt)
+		if err != nil {
+			b.send(chatID, fmt.Sprintf("❌ 新增失敗：%v", err))
+			return
+		}
+		b.send(chatID, fmt.Sprintf("✅ 排程已建立\nID：%s\nexpr：%s\nprompt：%s", j.ID, j.Expr, j.Prompt))
+	}
+}
+
+func (b *Bot) cmdCronList(chatID int64) {
+	jobs := b.cronMgr.List(chatID)
+	if len(jobs) == 0 {
+		b.send(chatID, "📋 目前沒有排程任務。\n用 /cron <expr> <prompt> 新增。")
+		return
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "📋 排程任務（%d 個）：\n", len(jobs))
+	for _, ji := range jobs {
+		fmt.Fprintf(&sb, "\n🆔 %s\n", ji.ID)
+		fmt.Fprintf(&sb, "  expr：%s\n", ji.Expr)
+		fmt.Fprintf(&sb, "  prompt：%s\n", ji.Prompt)
+		fmt.Fprintf(&sb, "  下次執行：%s\n", ji.NextRun.Local().Format("01/02 15:04:05"))
+		fmt.Fprintf(&sb, "  刪除：/cron del %s", ji.ID)
+	}
+	b.send(chatID, sb.String())
 }
 
 // ── Interactive session ───────────────────────────────────────────────────────
@@ -456,9 +588,6 @@ func (b *Bot) handleSessionMessage(ctx context.Context, msg *tgbotapi.Message, s
 	callCtx, cancel := context.WithTimeout(ctx, b.config.Timeout)
 	defer cancel()
 
-	waitTimer := time.NewTimer(waitingNoticeDelay)
-	defer waitTimer.Stop()
-
 	type result struct {
 		text string
 		err  error
@@ -469,13 +598,7 @@ func (b *Bot) handleSessionMessage(ctx context.Context, msg *tgbotapi.Message, s
 		ch <- result{t, err}
 	}()
 
-	var res result
-	select {
-	case res = <-ch:
-	case <-waitTimer.C:
-		b.send(msg.Chat.ID, waitingNoticeMsg)
-		res = <-ch
-	}
+	res := <-ch
 
 	if res.err != nil {
 		slog.Error("session send error", "chat_id", msg.Chat.ID, "error", res.err)
@@ -535,13 +658,45 @@ func (b *Bot) record(e recorder.Entry) {
 	}
 }
 
-func (b *Bot) addJob(chatID int64, from, question string, cancel context.CancelFunc) *job {
+func (b *Bot) recordCron(e recorder.CronEntry) {
+	if b.recorder == nil {
+		return
+	}
+	if err := b.recorder.LogCron(e); err != nil {
+		slog.Warn("failed to write cron log entry", "error", err)
+	}
+}
+
+func (b *Bot) addJob(chatID int64, from, question string, isCron bool, cancel context.CancelFunc) (*job, error) {
 	preview := question
 	if r := []rune(question); len(r) > 60 {
 		preview = string(r[:60]) + "…"
 	}
 	b.jobsMu.Lock()
 	defer b.jobsMu.Unlock()
+
+	if isCron && b.config.MaxCronJobs > 0 {
+		count := 0
+		for _, jj := range b.jobs {
+			if jj.isCron {
+				count++
+			}
+		}
+		if count >= b.config.MaxCronJobs {
+			return nil, fmt.Errorf("已達排程同時執行上限（%d）", b.config.MaxCronJobs)
+		}
+	} else if !isCron && b.config.MaxJobs > 0 {
+		count := 0
+		for _, jj := range b.jobs {
+			if !jj.isCron {
+				count++
+			}
+		}
+		if count >= b.config.MaxJobs {
+			return nil, fmt.Errorf("已達同時執行上限（%d），請稍後再試或 /stop 取消現有任務", b.config.MaxJobs)
+		}
+	}
+
 	b.nextJobID++
 	j := &job{
 		id:        b.nextJobID,
@@ -550,10 +705,11 @@ func (b *Bot) addJob(chatID int64, from, question string, cancel context.CancelF
 		preview:   preview,
 		startedAt: time.Now(),
 		cancel:    cancel,
+		isCron:    isCron,
 	}
 	b.jobs[j.id] = j
-	slog.Debug("job registered", "job_id", j.id, "chat_id", chatID, "from", from)
-	return j
+	slog.Debug("job registered", "job_id", j.id, "chat_id", chatID, "from", from, "is_cron", isCron)
+	return j, nil
 }
 
 func (b *Bot) removeJob(id int) {
@@ -566,10 +722,13 @@ func (b *Bot) removeJob(id int) {
 func (b *Bot) cmdHelp(chatID int64) {
 	text := `📖 tgconn 支援的指令：
 
-任意文字 — 轉發給 LLM 並回傳回應
+任意文字 — 轉發給 LLM，立即 ACK，完成後推送結果
 📷 圖片 / 📎 檔案 — 下載後讓 LLM 分析
 🎙️ 語音訊息 — 轉錄為文字後送出（需 --enable-voice）
 
+/cron <expr> <prompt> — 新增排程任務（標準 5 欄位 cron 或 @daily 等）
+/cron list — 列出排程任務
+/cron del <id> — 刪除排程任務
 /? 或 /help — 顯示此說明
 /list — 列出執行中的指令
 /stop <id> — 停止指定的執行中指令

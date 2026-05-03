@@ -16,28 +16,34 @@ const (
 )
 
 type Config struct {
-	Token        string
-	Provider     string
-	AllowedChats []int64
-	Timeout      time.Duration
-	Debug        bool
-	HistorySize  int
-	EnableVoice  bool
-	ExecMode     string
+	Token           string
+	Provider        string
+	AllowedChats    []int64
+	Timeout         time.Duration
+	Debug           bool
+	HistorySize     int
+	EnableVoice     bool
+	ExecMode        string
+	AnthropicAPIKey string
+	MaxJobs         int // max concurrent regular jobs per bot (0 = unlimited)
+	MaxCronJobs     int // max concurrent cron executions (0 = unlimited)
 }
 
 func Load() (*Config, error) {
 	cfg := &Config{
-		Token:       viper.GetString("token"),
-		Provider:    viper.GetString("provider"),
-		Timeout:     time.Duration(viper.GetInt("timeout")) * time.Second,
-		Debug:       viper.GetBool("debug"),
-		HistorySize: viper.GetInt("history_size"),
-		EnableVoice: viper.GetBool("enable_voice"),
-		ExecMode:    viper.GetString("exec_mode"),
+		Token:           viper.GetString("token"),
+		Provider:        viper.GetString("provider"),
+		Timeout:         time.Duration(viper.GetInt("timeout")) * time.Second,
+		Debug:           viper.GetBool("debug"),
+		HistorySize:     viper.GetInt("history_size"),
+		EnableVoice:     viper.GetBool("enable_voice"),
+		ExecMode:        viper.GetString("exec_mode"),
+		AnthropicAPIKey: viper.GetString("anthropic_api_key"),
+		MaxJobs:         viper.GetInt("max_jobs"),
+		MaxCronJobs:     viper.GetInt("max_cron_jobs"),
 	}
 	if cfg.Timeout == 0 {
-		cfg.Timeout = 15 * time.Minute
+		cfg.Timeout = 2 * time.Hour
 	}
 	if cfg.HistorySize == 0 {
 		cfg.HistorySize = 10

@@ -1,0 +1,7 @@
+.git
+.tgconn/
+vendor/
+tgconn
+*.test
+*.out
+.DS_Store

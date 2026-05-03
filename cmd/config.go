@@ -20,7 +20,7 @@ var configCmd = &cobra.Command{
 
 var configInitCmd = &cobra.Command{
 	Use:   "init",
-	Short: "Interactively create ~/.tgconn/config.yaml",
+	Short: "Interactively create ~/.config/tgconn/config.yaml",
 	RunE:  runConfigInit,
 }
 
@@ -68,7 +68,7 @@ func runConfigInit(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("cannot determine home directory: %w", err)
 	}
-	dir := filepath.Join(home, ".tgconn")
+	dir := filepath.Join(home, ".config", "tgconn")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("cannot create config directory: %w", err)
 	}

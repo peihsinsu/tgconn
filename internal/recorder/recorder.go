@@ -12,6 +12,7 @@ import (
 )
 
 const logDir = ".tgconn"
+const cronLogDir = ".tgconn/cron"
 
 type Entry struct {
 	Time      time.Time `json:"time"`
@@ -35,11 +36,38 @@ type Recorder struct {
 	dir string
 }
 
+// CronEntry records a single cron job execution.
+type CronEntry struct {
+	Time      time.Time `json:"time"`
+	ChatID    int64     `json:"chat_id"`
+	JobID     string    `json:"job_id"`
+	Expr      string    `json:"expr"`
+	Prompt    string    `json:"prompt"`
+	Response  string    `json:"response,omitempty"`
+	Error     string    `json:"error,omitempty"`
+	ElapsedMs int64     `json:"elapsed_ms"`
+}
+
 func New() (*Recorder, error) {
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		return nil, fmt.Errorf("cannot create log directory %s: %w", logDir, err)
 	}
+	if err := os.MkdirAll(cronLogDir, 0755); err != nil {
+		return nil, fmt.Errorf("cannot create cron log directory %s: %w", cronLogDir, err)
+	}
 	return &Recorder{dir: logDir}, nil
+}
+
+// LogCron writes a cron execution entry to the separate daily cron log.
+func (r *Recorder) LogCron(e CronEntry) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	filename := filepath.Join(cronLogDir, e.Time.Format("2006-01-02")+".jsonl")
+	if err := appendJSON(filename, e); err != nil {
+		return fmt.Errorf("cannot write cron log: %w", err)
+	}
+	return nil
 }
 
 // Log writes a full entry to the daily audit log.

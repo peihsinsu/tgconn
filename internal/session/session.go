@@ -59,6 +59,7 @@ type Session struct {
 	stdin      io.WriteCloser
 	scanner    *bufio.Scanner
 	lastMsg    time.Time
+	inFlight   bool // true while Send() is waiting for a response
 	cancel     context.CancelFunc
 	closed     bool
 	approvalFn provider.ApprovalFunc
@@ -154,9 +155,16 @@ func (s *Session) Send(ctx context.Context, message string) (string, error) {
 	}
 	s.MsgCount++
 	s.lastMsg = time.Now()
+	s.inFlight = true
 	stdin := s.stdin
 	scanner := s.scanner
 	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.inFlight = false
+		s.lastMsg = time.Now() // reset idle timer from response completion
+		s.mu.Unlock()
+	}()
 
 	payload, err := json.Marshal(inEvent{Type: "user", Message: inMessage{Role: "user", Content: message}})
 	if err != nil {
@@ -258,10 +266,11 @@ func (s *Session) Close() error {
 }
 
 // IsIdle returns true if the session has had no activity for IdleTimeout.
+// A session with an in-flight request is never considered idle.
 func (s *Session) IsIdle() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return !s.closed && time.Since(s.lastMsg) >= IdleTimeout
+	return !s.closed && !s.inFlight && time.Since(s.lastMsg) >= IdleTimeout
 }
 
 // IsClosed reports whether the session has been closed.
