@@ -32,8 +32,9 @@ permission prompts during execution. Three modes are provided:
 | `safe` | Read-only operations (Read / Glob / Grep / LS) are auto-allowed silently; Bash execution and file mutations (Write / Edit / Delete) are auto-denied silently; no Telegram interruptions |
 
 > **Codex note**: Codex does not expose a comparable TTY-based approval mechanism.
-> It will continue to use `--dangerously-bypass-approvals-and-sandbox` regardless
-> of the configured exec-mode, and a startup warning will be logged when mode ≠ `auto`.
+> When `ask` or `safe` mode is configured, `CodexProvider.Execute` returns a
+> user-visible Telegram message explaining the limitation and suggesting alternatives.
+> Only `auto` (or unset) mode proceeds to invoke `codex --dangerously-bypass-approvals-and-sandbox`.
 
 ## Motivation
 

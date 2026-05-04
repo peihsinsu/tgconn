@@ -44,3 +44,26 @@ the provider name.
 #### Scenario: startup broadcast includes exec-mode
 - **WHEN** the bot connects with `--provider claude --exec-mode safe`
 - **THEN** the broadcast message contains both `claude` and `safe`
+
+---
+
+### Requirement: Codex Exec Mode Compatibility
+When using the `codex` provider, only `auto` mode is supported. Unsupported modes SHALL return a descriptive Telegram message rather than attempting execution.
+
+#### Scenario: codex with ask mode returns unsupported message
+- **WHEN** `--provider codex --exec-mode ask` is set
+- **AND** a message is sent to the bot
+- **THEN** Codex returns a Telegram message stating `ask` mode is unsupported
+- **AND** the message suggests switching to `auto` mode or using the `claude` provider
+- **AND** no `codex` subprocess is spawned
+
+#### Scenario: codex with safe mode returns unsupported message
+- **WHEN** `--provider codex --exec-mode safe` is set
+- **AND** a message is sent to the bot
+- **THEN** Codex returns a Telegram message stating `safe` mode is unsupported
+- **AND** the message suggests switching to `auto` mode or using the `claude` provider
+- **AND** no `codex` subprocess is spawned
+
+#### Scenario: codex with auto mode executes normally
+- **WHEN** `--provider codex --exec-mode auto` (or mode unset) is configured
+- **THEN** `codex --dangerously-bypass-approvals-and-sandbox` is invoked normally

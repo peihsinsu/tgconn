@@ -47,19 +47,39 @@ make install INSTALL_DIR=/usr/local/bin   # install to custom path (requires sud
 
 ## Setup
 
-### 1. Create a Telegram Bot
+### Quickstart (recommended)
+
+```bash
+tgconn init
+```
+
+`tgconn init` walks you through the entire first-time setup in one command:
+
+1. Prompts for your bot token (from [@BotFather](https://t.me/BotFather)) and LLM provider.
+2. Writes `~/.config/tgconn/config.yaml` (permissions `0600`).
+3. Connects to Telegram and waits for you to send any message to the bot.
+4. Captures the sender's chat ID and asks you to confirm it in the terminal.
+5. Saves the confirmed chat ID into the config.
+
+After `tgconn init` finishes, just run `tgconn connect`.
+
+---
+
+### Manual Setup
+
+#### 1. Create a Telegram Bot
 
 1. Open [@BotFather](https://t.me/BotFather) in Telegram.
 2. Send `/newbot` and follow the prompts.
 3. Copy the **bot token** (looks like `123456789:ABCDefGhIJKlmNoPQRSTuvWXyz`).
 
-### 2. Find Your Chat ID
+#### 2. Find Your Chat ID
 
 Send any message to [@userinfobot](https://t.me/userinfobot) — it replies with your numeric chat ID.
 
-### 3. Configure tgconn
+#### 3. Configure tgconn
 
-**Option A — Interactive setup (recommended):**
+**Option A — `tgconn config init` (prompts, no chat-ID capture):**
 
 ```bash
 tgconn config init
@@ -152,6 +172,8 @@ Control how Claude handles permission prompts with `--exec-mode`:
 | `safe` | Read-only analysis; file writes and shell execution blocked | `--permission-mode plan` |
 
 In `ask` mode, when Claude requests permission to use a tool, tgconn sends a Telegram message with inline buttons. Claude waits until you approve or deny before continuing. Unanswered prompts are auto-denied after 5 minutes.
+
+> **Codex provider limitation:** Codex only supports `auto` mode. If `ask` or `safe` is configured with `--provider codex`, the bot returns a descriptive error message for each request rather than invoking Codex. Switch to `--exec-mode auto` or use `--provider claude` for interactive approval flows.
 
 > **Note:** Cron-triggered tasks always run in `auto` mode regardless of the global setting, since they execute unattended.
 
