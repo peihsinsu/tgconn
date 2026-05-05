@@ -1,6 +1,7 @@
 # tgconn — Telegram LLM Connector
 
 Bridge Telegram to an LLM provider (Claude, Codex) by executing it as a subprocess in your current working directory. Each Telegram message triggers the provider CLI and streams the response back to the chat.
+Please aware about this is release your LLM provider (claude) that you can remote work with it through telegram. You may become more busy...
 
 ## How It Works
 
@@ -208,14 +209,14 @@ Schedule recurring LLM tasks using standard cron expressions. Tasks fire unatten
 
 ```
 # Standard 5-field cron (min hour dom month dow)
-/cron 0 9 * * * 幫我檢查 usfield emqx cluster 狀態
+/cron 0 9 * * * Hi devops help me to check my emqx cluster status
 
 # Every Monday at 9am
-/cron 0 9 * * 1 "產生本週報告"
+/cron 0 9 * * 1 "create healthcheck report for last week"
 
 # Predefined schedules
-/cron @hourly  統計最近一小時的錯誤數
-/cron @daily   每日系統健康摘要
+/cron @hourly  help me to calcuate the error rate for last hour
+/cron @daily   please do weekly healthcheck for my environment
 
 # List all scheduled tasks
 /cron list

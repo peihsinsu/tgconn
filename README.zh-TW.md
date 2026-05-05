@@ -1,6 +1,7 @@
 # tgconn — Telegram LLM 連接器
 
 將 Telegram 橋接到 LLM 提供者（Claude、Codex），透過在當前工作目錄執行 CLI 子程序的方式，把每則 Telegram 訊息轉發給 LLM，並將結果推送回聊天室。
+請注意，這代表解放了LLM 提供者(ex: claude)，讓telegram可以對LLM 提供者直接下指令，你的工作量可能會突然增加... 
 
 ## 運作原理
 
