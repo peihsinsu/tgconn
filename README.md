@@ -173,7 +173,9 @@ Control how Claude handles permission prompts with `--exec-mode`:
 
 In `ask` mode, when Claude requests permission to use a tool, tgconn sends a Telegram message with inline buttons. Claude waits until you approve or deny before continuing. Unanswered prompts are auto-denied after 5 minutes.
 
-> **Codex provider limitation:** Codex only supports `auto` mode. If `ask` or `safe` is configured with `--provider codex`, the bot returns a descriptive error message for each request rather than invoking Codex. Switch to `--exec-mode auto` or use `--provider claude` for interactive approval flows.
+> **PTY fallback:** `ask` mode requires a PTY to intercept Claude's permission prompts. On systems where PTY allocation fails (e.g. some Docker setups), tgconn automatically falls back to `auto` mode and logs a warning. To guarantee approval prompts in Docker, use a TTY (`docker run -it ...`) or set `--exec-mode auto` explicitly.
+
+> **Codex provider limitation:** Codex only supports `auto` mode. If `ask` or `safe` is configured with `--provider codex`, the bot returns an error message for each request rather than invoking Codex — switch to `--exec-mode auto` or use `--provider claude` instead.
 
 > **Note:** Cron-triggered tasks always run in `auto` mode regardless of the global setting, since they execute unattended.
 
