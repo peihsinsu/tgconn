@@ -1,6 +1,9 @@
 # binary
 tgconn
 
+# cross-compiled binaries
+dist/
+
 # runtime data
 .tgconn/
 
@@ -8,6 +11,9 @@ tgconn
 *.test
 *.out
 vendor/
+
+# Claude Code local settings (project commands in .claude/commands/ are intentional)
+.claude/settings.local.json
 
 # macOS
 .DS_Store
