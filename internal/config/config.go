@@ -23,6 +23,8 @@ type Config struct {
 	Debug           bool
 	HistorySize     int
 	EnableVoice     bool
+	WhisperBackend  string // "auto" | "openai-whisper" | "whisper.cpp"; empty = auto
+	WhisperModel    string // backend-specific model identifier; empty = backend default (openai-whisper only)
 	ExecMode        string
 	AnthropicAPIKey string
 	MaxJobs         int // max concurrent regular jobs per bot (0 = unlimited)
@@ -37,6 +39,8 @@ func Load() (*Config, error) {
 		Debug:           viper.GetBool("debug"),
 		HistorySize:     viper.GetInt("history_size"),
 		EnableVoice:     viper.GetBool("enable_voice"),
+		WhisperBackend:  strings.TrimSpace(viper.GetString("whisper_backend")),
+		WhisperModel:    strings.TrimSpace(viper.GetString("whisper_model")),
 		ExecMode:        viper.GetString("exec_mode"),
 		AnthropicAPIKey: viper.GetString("anthropic_api_key"),
 		MaxJobs:         viper.GetInt("max_jobs"),

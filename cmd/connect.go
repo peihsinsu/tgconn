@@ -36,6 +36,8 @@ func init() {
 	connectCmd.Flags().Int("timeout", 0, "LLM provider execution timeout in seconds (default 7200)")
 	connectCmd.Flags().Int("history-size", 0, "number of past Q&A exchanges to inject as context (default 10, 0 = disable)")
 	connectCmd.Flags().Bool("enable-voice", false, "enable voice message transcription via whisper CLI")
+	connectCmd.Flags().String("whisper-backend", "", "transcription backend: auto (default), openai-whisper, whisper.cpp")
+	connectCmd.Flags().String("whisper-model", "", "whisper model: openai-whisper name (e.g. turbo) or whisper.cpp ggml-*.bin path / short name (e.g. base)")
 	connectCmd.Flags().String("exec-mode", "ask", "execution mode: auto (skip all prompts), ask (Telegram approval), safe (auto-deny dangerous ops)")
 	connectCmd.Flags().String("api-key", "", "Anthropic API key; if omitted, falls back to ANTHROPIC_API_KEY env var or ~/.claude session")
 	connectCmd.Flags().Int("max-jobs", 0, "max concurrent regular jobs (0 = unlimited)")
@@ -45,6 +47,8 @@ func init() {
 	_ = viper.BindPFlag("timeout", connectCmd.Flags().Lookup("timeout"))
 	_ = viper.BindPFlag("history_size", connectCmd.Flags().Lookup("history-size"))
 	_ = viper.BindPFlag("enable_voice", connectCmd.Flags().Lookup("enable-voice"))
+	_ = viper.BindPFlag("whisper_backend", connectCmd.Flags().Lookup("whisper-backend"))
+	_ = viper.BindPFlag("whisper_model", connectCmd.Flags().Lookup("whisper-model"))
 	_ = viper.BindPFlag("exec_mode", connectCmd.Flags().Lookup("exec-mode"))
 	_ = viper.BindPFlag("anthropic_api_key", connectCmd.Flags().Lookup("api-key"))
 	_ = viper.BindPFlag("max_jobs", connectCmd.Flags().Lookup("max-jobs"))
@@ -98,12 +102,17 @@ func runConnect(_ *cobra.Command, _ []string) error {
 	slog.Info("provider binary ready", "provider", cfg.Provider)
 
 	if cfg.EnableVoice {
-		slog.Info("checking whisper binary for voice transcription")
-		if err := transcriber.Check(); err != nil {
-			slog.Error("whisper binary not found", "error", err)
+		slog.Info("detecting transcription backend")
+		backend, err := transcriber.Detect(cfg.WhisperBackend)
+		if err != nil {
+			slog.Error("transcription backend not available", "error", err)
 			return err
 		}
-		slog.Info("whisper binary ready")
+		model := cfg.WhisperModel
+		if model == "" {
+			model = "(backend default)"
+		}
+		slog.Info("transcription backend ready", "backend", backend.String(), "model", model)
 	}
 
 	rec, err := recorder.New()

@@ -870,7 +870,7 @@ func (b *Bot) handleVoice(ctx context.Context, msg *tgbotapi.Message) {
 
 	slog.Info("transcribing voice", "chat_id", msg.Chat.ID, "path", localPath)
 	b.send(msg.Chat.ID, "🎙️ 正在轉錄語音...")
-	text, err := transcriber.Transcribe(ctx, localPath)
+	text, err := transcriber.Transcribe(ctx, localPath, b.config.WhisperBackend, b.config.WhisperModel)
 	if err != nil {
 		slog.Error("whisper transcription failed", "chat_id", msg.Chat.ID, "error", err)
 		b.send(msg.Chat.ID, fmt.Sprintf("語音轉錄失敗：%v", err))
