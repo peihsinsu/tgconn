@@ -270,17 +270,37 @@ tgconn supports two backends. With `--whisper-backend auto` (default) it picks t
 
 #### Option A — whisper.cpp (recommended: fast, local, no Python deps)
 
+**macOS**
 ```bash
-# 1. Install binaries (macOS)
 brew install whisper-cpp ffmpeg
+```
 
-# 2. Download a model (medium ~1.5 GB is a sweet spot)
+**Linux (Debian/Ubuntu)**
+```bash
+apt install ffmpeg
+# whisper-cli: download a prebuilt binary from https://github.com/ggerganov/whisper.cpp/releases
+# or build from source: git clone https://github.com/ggerganov/whisper.cpp && cd whisper.cpp && make
+```
+
+**Windows**
+```
+winget install FFmpeg
+# whisper-cli: download whisper-cli.exe from https://github.com/ggerganov/whisper.cpp/releases
+# Place it somewhere on %PATH%
+# Set WHISPER_CPP_MODELS=C:\Users\<you>\whisper-models (model auto-detection does not follow Windows conventions)
+```
+
+**Download a model**
+```bash
+# macOS / Linux
 mkdir -p ~/.cache/whisper-cpp
 curl -L --progress-bar \
   -o ~/.cache/whisper-cpp/ggml-medium.bin \
   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin
+```
 
-# 3. Run
+**Run**
+```bash
 tgconn --provider claude connect --allow-chat 123456789 \
   --enable-voice --whisper-model medium
 ```
@@ -309,6 +329,45 @@ tgconn --provider claude connect --allow-chat 123456789 --enable-voice
 Optionally pass `--whisper-model turbo` (or `tiny`/`base`/`small`/`medium`/`large-v3`); leave empty to let whisper use its own default.
 
 > On macOS 26 (Tahoe) + Python 3.12 + x86_64, installing openai-whisper can fail because no `llvmlite` wheel is published for that combo (it tries to build LLVM from source). Prefer Option A, or use Python 3.11.
+
+### How Voice Messages Are Processed
+
+When you send a voice message in Telegram:
+
+```
+Hold mic button → record → send
+    ↓
+tgconn downloads the .ogg (Opus) file to .tgconn/tmp/<chat_id>/
+    ↓
+[whisper.cpp]  ffmpeg converts .ogg → 16kHz mono WAV
+               whisper-cli -m <model.bin> -f <wav> -otxt
+[openai-whisper] whisper <ogg> --output_format txt
+    ↓
+Transcript read from .txt output (capped at 4 000 characters)
+    ↓
+Transcript forwarded to LLM as plain text
+    ↓
+Result pushed back to Telegram chat
+```
+
+The transcript is shown in the job tracker as `🎙️ <transcribed text>`.
+
+### Voice Limitations
+
+- **Voice messages only** — the 🎙️ button in Telegram. Audio files (.mp3, .m4a, etc.) sent as attachments are not supported (use the voice message button instead).
+- **Transcript capped at 4 000 characters** — long recordings are truncated.
+- **Not available in `/session` mode** — interactive sessions accept text only.
+- **Language auto-detected** by whisper — no per-chat language configuration currently.
+
+### Troubleshooting
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `whisper-cli not found` | Binary not on `$PATH` | `brew install whisper-cpp` (macOS) or download prebuilt binary |
+| `ffmpeg required to convert audio` | `ffmpeg` not on `$PATH` | `brew install ffmpeg` / `apt install ffmpeg` |
+| `whisper model … not found` | Model file missing | Download the model; set `$WHISPER_CPP_MODELS` on Windows |
+| `whisper-cli failed` | Wrong model or corrupt file | Re-download the model; verify path with `ls ~/.cache/whisper-cpp/` |
+| `語音訊息目前未啟用` | Bot started without `--enable-voice` | Restart with `--enable-voice` flag |
 
 ---
 
