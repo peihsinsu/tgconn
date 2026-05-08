@@ -878,6 +878,7 @@ func (b *Bot) handleVoice(ctx context.Context, msg *tgbotapi.Message) {
 	}
 
 	slog.Info("voice transcribed", "chat_id", msg.Chat.ID, "runes", utf8.RuneCountInString(text))
+	b.send(msg.Chat.ID, fmt.Sprintf("🎙️ 識別結果：\n%s", text))
 	b.executeAndReply(ctx, msg, fmt.Sprintf("🎙️ %s", text), text)
 }
 
