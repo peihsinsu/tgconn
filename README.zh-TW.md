@@ -24,7 +24,9 @@ claude -p "<訊息>"   ← 在當前工作目錄執行，可讀取本機檔案
 - Go 1.24+
 - LLM 提供者 CLI 在 `$PATH` 中（`claude` 或 `codex`）
 - Telegram Bot Token（向 [@BotFather](https://t.me/BotFather) 申請）
-- *（選用）* `whisper` CLI，用於語音訊息轉錄
+- *（選用）* 語音轉錄後端，二擇一即可：
+  - `whisper-cli`（whisper.cpp，推薦）+ `ffmpeg` — `brew install whisper-cpp ffmpeg`
+  - `whisper`（openai-whisper）— `pip install openai-whisper`
 
 ---
 
@@ -118,7 +120,9 @@ tgconn --provider claude connect \
 | `exec_mode`         | —                      | `--exec-mode`      | 權限模式：`auto`、`ask`、`safe`（預設：`ask`） |
 | `timeout`           | —                      | `--timeout`        | 提供者執行逾時秒數（預設：7200） |
 | `history_size`      | —                      | `--history-size`   | 注入為上下文的過去對話筆數（預設：10，0 為停用） |
-| `enable_voice`      | —                      | `--enable-voice`   | 啟用語音訊息轉錄（需 whisper CLI） |
+| `enable_voice`      | —                      | `--enable-voice`     | 啟用語音訊息轉錄 |
+| `whisper_backend`   | —                      | `--whisper-backend`  | 轉錄後端：`auto`（預設）、`whisper.cpp`、`openai-whisper` |
+| `whisper_model`     | —                      | `--whisper-model`    | 模型：whisper.cpp 用 `ggml-*.bin` 路徑或短名（如 `medium`）；openai-whisper 用名稱（如 `turbo`） |
 | `anthropic_api_key` | `ANTHROPIC_API_KEY`    | `--api-key`        | Anthropic API Key（替代 `~/.claude` session 認證） |
 | `max_jobs`          | —                      | `--max-jobs`       | 最大同時執行的一般任務數（0 = 無限制） |
 | `max_cron_jobs`     | —                      | `--max-cron-jobs`  | 最大同時執行的排程任務數（0 = 無限制） |
@@ -255,16 +259,57 @@ tgconn 預設為**單次執行**模式：每則訊息啟動一個新的提供者
 | 文字 | 直接轉發給 LLM |
 | 圖片 | 下載至 `.tgconn/tmp/<chat_id>/`，路徑與說明注入 prompt |
 | 文件 / 檔案 | 下載（≤ 20 MB），路徑、檔名與說明注入 prompt |
-| 語音訊息 | 以 `whisper` 轉錄（需 `--enable-voice`），轉錄文字轉發給 LLM |
+| 語音訊息 | 以 whisper.cpp 或 openai-whisper 轉錄（需 `--enable-voice`），轉錄文字轉發給 LLM |
 | 貼圖 | 回覆不支援提示 |
 | 影片 / 音訊 / GIF | 回覆不支援提示 |
 
 ### 語音轉錄設定
 
+tgconn 支援兩種後端，啟動時 `--whisper-backend auto`（預設）會自動選擇：先找 `whisper-cli`（whisper.cpp），找不到才退回 `whisper`（openai-whisper）。
+
+#### 方式 A — whisper.cpp（推薦：快、本地、免 Python 依賴）
+
+```bash
+# 1. 安裝執行檔（macOS）
+brew install whisper-cpp ffmpeg
+
+# 2. 下載模型（中文推薦 medium，約 1.5 GB）
+mkdir -p ~/.cache/whisper-cpp
+curl -L --progress-bar \
+  -o ~/.cache/whisper-cpp/ggml-medium.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin
+
+# 3. 啟動
+tgconn --provider claude connect --allow-chat 123456789 \
+  --enable-voice --whisper-model medium
+```
+
+模型大小參考：
+
+| 短名 | 大小 | 中文品質 |
+|------|------|---------|
+| `tiny` | 75 MB | 差 |
+| `base` | 142 MB | 堪用 |
+| `small` | 466 MB | 不錯 |
+| `medium` | 1.5 GB | **推薦** |
+| `large-v3` | 3.0 GB | 最佳 |
+
+`--whisper-model` 也可直接給 `.bin` 完整路徑。短名會依序在 `$WHISPER_CPP_MODELS`、`~/.cache/whisper-cpp/` 找 `ggml-<name>.bin`。
+
+> Telegram 語音是 Opus/.ogg 格式，tgconn 會自動以 `ffmpeg` 轉成 16kHz mono WAV 再交給 `whisper-cli`。
+
+#### 方式 B — openai-whisper（Python 套件）
+
 ```bash
 pip install openai-whisper
 tgconn --provider claude connect --allow-chat 123456789 --enable-voice
 ```
+
+可選 `--whisper-model turbo`（或 `tiny`/`base`/`small`/`medium`/`large-v3`），留空則用 whisper 自己的預設。
+
+> macOS 26（Tahoe）+ Python 3.12 + x86_64 在裝 openai-whisper 時可能因 `llvmlite` wheel 不存在而失敗（要編 LLVM）。建議改用方式 A，或改用 Python 3.11。
+
+---
 
 超過 **20 MB** 的檔案會拒絕並回覆友善錯誤訊息。
 

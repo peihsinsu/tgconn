@@ -24,7 +24,9 @@ The subprocess runs from the **current working directory**, so the LLM can read 
 - Go 1.24+
 - The LLM provider CLI on `$PATH` (`claude` or `codex`)
 - A Telegram bot token (obtain from [@BotFather](https://t.me/BotFather))
-- *(Optional)* `whisper` CLI for voice message transcription
+- *(Optional)* a voice transcription backend (either is fine):
+  - `whisper-cli` (whisper.cpp, recommended) + `ffmpeg` — `brew install whisper-cpp ffmpeg`
+  - `whisper` (openai-whisper) — `pip install openai-whisper`
 
 ---
 
@@ -118,7 +120,9 @@ Priority order: **CLI flag > environment variable > config file**
 | `exec_mode`         | —                      | `--exec-mode`      | Permission mode: `auto`, `ask`, `safe` (default: `ask`) |
 | `timeout`           | —                      | `--timeout`        | Provider execution timeout in seconds (default: 7200) |
 | `history_size`      | —                      | `--history-size`   | Past Q&A exchanges injected as context (default: 10, 0 = disabled) |
-| `enable_voice`      | —                      | `--enable-voice`   | Enable voice message transcription via whisper CLI |
+| `enable_voice`      | —                      | `--enable-voice`     | Enable voice message transcription |
+| `whisper_backend`   | —                      | `--whisper-backend`  | Backend: `auto` (default), `whisper.cpp`, `openai-whisper` |
+| `whisper_model`     | —                      | `--whisper-model`    | Model: whisper.cpp takes a `ggml-*.bin` path or short name (e.g. `medium`); openai-whisper takes a name (e.g. `turbo`) |
 | `anthropic_api_key` | `ANTHROPIC_API_KEY`    | `--api-key`        | Anthropic API key (alternative to `~/.claude` session auth) |
 | `max_jobs`          | —                      | `--max-jobs`       | Max concurrent regular jobs (default: 0 = unlimited) |
 | `max_cron_jobs`     | —                      | `--max-cron-jobs`  | Max concurrent cron executions (default: 0 = unlimited) |
@@ -256,16 +260,57 @@ Follow-up          → Claude has full context of everything above
 | Text | Forwarded directly to the LLM |
 | Photo | Downloaded to `.tgconn/tmp/<chat_id>/`; path + caption injected into prompt |
 | Document / File | Downloaded (≤ 20 MB); path, filename, and caption injected into prompt |
-| Voice message | Transcribed with `whisper` (requires `--enable-voice`); transcript forwarded as text |
+| Voice message | Transcribed with whisper.cpp or openai-whisper (requires `--enable-voice`); transcript forwarded as text |
 | Sticker | Friendly unsupported-type reply (emoji included) |
 | Video / Audio / GIF | Unsupported-type reply with guidance |
 
 ### Voice Transcription Setup
 
+tgconn supports two backends. With `--whisper-backend auto` (default) it picks the best one available: it checks for `whisper-cli` (whisper.cpp) first, falling back to `whisper` (openai-whisper).
+
+#### Option A — whisper.cpp (recommended: fast, local, no Python deps)
+
+```bash
+# 1. Install binaries (macOS)
+brew install whisper-cpp ffmpeg
+
+# 2. Download a model (medium ~1.5 GB is a sweet spot)
+mkdir -p ~/.cache/whisper-cpp
+curl -L --progress-bar \
+  -o ~/.cache/whisper-cpp/ggml-medium.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin
+
+# 3. Run
+tgconn --provider claude connect --allow-chat 123456789 \
+  --enable-voice --whisper-model medium
+```
+
+Model sizes:
+
+| Short name | Size | Notes |
+|-----------|------|-------|
+| `tiny` | 75 MB | Fastest, low accuracy |
+| `base` | 142 MB | Lightweight |
+| `small` | 466 MB | Balanced |
+| `medium` | 1.5 GB | **Recommended** |
+| `large-v3` | 3.0 GB | Highest accuracy, slowest |
+
+`--whisper-model` also accepts a full path to a `.bin` file. Short names are resolved against `$WHISPER_CPP_MODELS` and `~/.cache/whisper-cpp/` (looking for `ggml-<name>.bin`).
+
+> Telegram voice messages are Opus/.ogg; tgconn auto-converts them to 16kHz mono WAV via `ffmpeg` before invoking `whisper-cli`.
+
+#### Option B — openai-whisper (Python package)
+
 ```bash
 pip install openai-whisper
 tgconn --provider claude connect --allow-chat 123456789 --enable-voice
 ```
+
+Optionally pass `--whisper-model turbo` (or `tiny`/`base`/`small`/`medium`/`large-v3`); leave empty to let whisper use its own default.
+
+> On macOS 26 (Tahoe) + Python 3.12 + x86_64, installing openai-whisper can fail because no `llvmlite` wheel is published for that combo (it tries to build LLVM from source). Prefer Option A, or use Python 3.11.
+
+---
 
 Files larger than **20 MB** are rejected with a user-friendly error message.
 
