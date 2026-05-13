@@ -185,7 +185,7 @@ func (m *Manager) save(j *Job) error {
 func ParseArgs(args string) (expr, prompt string, err error) {
 	args = strings.TrimSpace(args)
 	if args == "" {
-		return "", "", fmt.Errorf("usage: /cron <expr> <prompt>\n例：/cron \"0 9 * * *\" 每天早上九點做報告")
+		return "", "", fmt.Errorf("usage: /cron <expr> <prompt>\nexample: /cron \"0 9 * * *\" daily morning report")
 	}
 
 	if strings.HasPrefix(args, "@") {
@@ -201,7 +201,7 @@ func ParseArgs(args string) (expr, prompt string, err error) {
 	// Standard 5-field cron: need at least 5 fields + 1 prompt word
 	parts := strings.Fields(args)
 	if len(parts) < 6 {
-		return "", "", fmt.Errorf("usage: /cron <min> <hour> <dom> <month> <dow> <prompt>\n例：/cron 0 9 * * 1 每週一早上九點做報告")
+		return "", "", fmt.Errorf("usage: /cron <min> <hour> <dom> <month> <dow> <prompt>\nexample: /cron 0 9 * * 1 weekly Monday morning report")
 	}
 	expr = strings.Join(parts[:5], " ")
 	raw := strings.Join(parts[5:], " ")

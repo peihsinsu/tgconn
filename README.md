@@ -76,7 +76,18 @@ After `tgconn init` finishes, just run `tgconn connect`.
 2. Send `/newbot` and follow the prompts.
 3. Copy the **bot token** (looks like `123456789:ABCDefGhIJKlmNoPQRSTuvWXyz`).
 
-#### 2. Find Your Chat ID
+#### 2. (Optional) Enable Group Chat Support
+
+By default Telegram enables **Group Privacy Mode** for bots, which means the bot only receives `/commands` — regular messages sent in a group are invisible to it.
+
+To let the bot respond to all group messages:
+
+1. Open [@BotFather](https://t.me/BotFather) and send `/mybots`.
+2. Select your bot → **Bot Settings** → **Group Privacy** → **Turn off**.
+
+> **Note:** Group chat IDs are negative numbers (e.g. `-1001234567890`). Get yours by forwarding a group message to [@userinfobot](https://t.me/userinfobot), then add it to `allowed_chats` in your config.
+
+#### 3. Find Your Chat ID
 
 Send any message to [@userinfobot](https://t.me/userinfobot) — it replies with your numeric chat ID.
 
@@ -126,6 +137,7 @@ Priority order: **CLI flag > environment variable > config file**
 | `anthropic_api_key` | `ANTHROPIC_API_KEY`    | `--api-key`        | Anthropic API key (alternative to `~/.claude` session auth) |
 | `max_jobs`          | —                      | `--max-jobs`       | Max concurrent regular jobs (default: 0 = unlimited) |
 | `max_cron_jobs`     | —                      | `--max-cron-jobs`  | Max concurrent cron executions (default: 0 = unlimited) |
+| `language`          | —                      | —                  | Bot message language: `en` (default), `zh-TW` |
 | `debug`             | —                      | `--debug`          | Enable verbose debug logging |
 
 ### Config File
@@ -143,6 +155,7 @@ history_size: 10
 anthropic_api_key: ""   # leave empty to use ~/.claude session
 max_jobs: 0             # max concurrent regular jobs (0 = unlimited)
 max_cron_jobs: 0        # max concurrent cron executions (0 = unlimited)
+language: en            # bot message language: en (default), zh-TW
 ```
 
 ---

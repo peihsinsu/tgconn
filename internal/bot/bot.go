@@ -17,6 +17,7 @@ import (
 	"github.com/cx009/tgconn/internal/config"
 	"github.com/cx009/tgconn/internal/cronjob"
 	"github.com/cx009/tgconn/internal/downloader"
+	"github.com/cx009/tgconn/internal/i18n"
 	"github.com/cx009/tgconn/internal/provider"
 	"github.com/cx009/tgconn/internal/recorder"
 	"github.com/cx009/tgconn/internal/session"
@@ -47,6 +48,7 @@ type Bot struct {
 	api        *tgbotapi.BotAPI
 	provider   provider.Provider
 	config     *config.Config
+	msgs       *i18n.Messages
 	recorder   *recorder.Recorder
 	dl         *downloader.Downloader
 	jobsMu     sync.Mutex
@@ -80,6 +82,7 @@ func New(cfg *config.Config, p provider.Provider, rec *recorder.Recorder) (*Bot,
 		api:              api,
 		provider:         p,
 		config:           cfg,
+		msgs:             i18n.Get(cfg.Language),
 		recorder:         rec,
 		dl:               downloader.New(api, ".tgconn/tmp"),
 		jobs:             make(map[int]*job),
@@ -113,7 +116,7 @@ func (b *Bot) Start(ctx context.Context) error {
 	updates := b.api.GetUpdatesChan(u)
 
 	slog.Info("polling for updates", "poll_timeout_sec", u.Timeout)
-	b.broadcast(fmt.Sprintf("✅ 已連線，provider: %s  模式: %s", b.config.Provider, b.config.ExecMode))
+	b.broadcast(fmt.Sprintf(b.msgs.Connected, b.config.Provider, b.config.ExecMode))
 
 	b.cronMgr.Start()
 	defer func() {
@@ -130,7 +133,7 @@ loop:
 		select {
 		case <-ctx.Done():
 			slog.Info("shutdown signal received, stopping update polling")
-			b.broadcast("🔌 Bot 即將關閉，已斷線")
+			b.broadcast(b.msgs.Disconnecting)
 			b.api.StopReceivingUpdates()
 			break loop
 		case update, ok := <-updates:
@@ -194,6 +197,14 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 		return
 	}
 
+	// In group/supergroup chats, only respond when the bot is explicitly mentioned
+	// or when the message is a direct reply to the bot.
+	if isGroupChat(msg) && !b.botAddressed(msg) {
+		slog.Debug("group message not addressed to bot — ignoring",
+			"chat_id", msg.Chat.ID, "message_id", msg.MessageID)
+		return
+	}
+
 	// Active session: route all messages directly into the Claude process.
 	b.sessionsMu.Lock()
 	sess, hasSession := b.sessions[msg.Chat.ID]
@@ -209,13 +220,13 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 		b.handleSticker(msg)
 		return
 	case msg.Video != nil:
-		b.handleUnsupportedMedia(msg.Chat.ID, "影片目前不支援，請改用文字或傳送截圖")
+		b.handleUnsupportedMedia(msg.Chat.ID, b.msgs.MediaUnsupportedVideo)
 		return
 	case msg.Audio != nil:
-		b.handleUnsupportedMedia(msg.Chat.ID, "音訊檔目前不支援，如需語音轉文字請啟用 --enable-voice 並傳送語音訊息")
+		b.handleUnsupportedMedia(msg.Chat.ID, b.msgs.MediaUnsupportedAudio)
 		return
 	case msg.Animation != nil:
-		b.handleUnsupportedMedia(msg.Chat.ID, "GIF/動畫目前不支援，請改用文字")
+		b.handleUnsupportedMedia(msg.Chat.ID, b.msgs.MediaUnsupportedAnim)
 		return
 	case msg.Voice != nil:
 		b.handleVoice(ctx, msg)
@@ -228,7 +239,9 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 		return
 	}
 
-	question := msg.Text
+	// Strip @botusername from the question so the LLM doesn't see the mention noise.
+	// Also normalises "/cmd@botusername" → "/cmd" for group commands.
+	question := stripBotMention(msg.Text, b.api.Self.UserName, msg.Entities)
 	if question == "" {
 		slog.Debug("ignoring empty message", "chat_id", msg.Chat.ID, "message_id", msg.MessageID)
 		return
@@ -295,7 +308,7 @@ func (b *Bot) executeAndReply(ctx context.Context, msg *tgbotapi.Message, displa
 		b.removeJob(j.id)
 	}()
 
-	b.send(chatID, fmt.Sprintf("⚙️ 處理中 #%d，完成後通知你。取消：/stop %d", j.id, j.id))
+	b.send(chatID, fmt.Sprintf(b.msgs.JobACK, j.id, j.id))
 
 	type result struct {
 		response string
@@ -330,7 +343,7 @@ func (b *Bot) executeAndReply(ctx context.Context, msg *tgbotapi.Message, displa
 			slog.Info("provider still running — sending progress notice",
 				"chat_id", chatID, "job_id", j.id, "elapsed", elapsed,
 			)
-			b.send(chatID, fmt.Sprintf("⏳ #%d 仍在執行中（已等 %s）...", j.id, elapsed))
+			b.send(chatID, fmt.Sprintf(b.msgs.JobProgress, j.id, elapsed))
 		}
 	}
 done:
@@ -343,7 +356,7 @@ done:
 	if res.err != nil {
 		if wasStopped {
 			slog.Info("job stopped by user", "chat_id", chatID, "job_id", j.id, "elapsed", elapsed)
-			b.send(chatID, fmt.Sprintf("🛑 #%d 已停止（執行了 %s）", j.id, elapsed))
+			b.send(chatID, fmt.Sprintf(b.msgs.JobStopped, j.id, elapsed))
 			b.record(recorder.Entry{
 				Time: start, ChatID: chatID, From: fromUser,
 				Question: displayQuestion, Error: "stopped by user", ElapsedMs: elapsed.Milliseconds(),
@@ -353,7 +366,7 @@ done:
 		slog.Error("provider error",
 			"chat_id", chatID, "from", fromUser, "job_id", j.id, "elapsed", elapsed, "error", res.err,
 		)
-		b.send(chatID, fmt.Sprintf("❌ #%d 失敗（%s）：%v", j.id, elapsed.Round(time.Second), res.err))
+		b.send(chatID, fmt.Sprintf(b.msgs.JobFailed, j.id, elapsed.Round(time.Second), res.err))
 		b.record(recorder.Entry{
 			Time: start, ChatID: chatID, From: fromUser,
 			Question: displayQuestion, Error: res.err.Error(), ElapsedMs: elapsed.Milliseconds(),
@@ -368,7 +381,7 @@ done:
 		"response_runes", utf8.RuneCountInString(res.response), "chunks", len(chunks),
 	)
 
-	b.send(chatID, fmt.Sprintf("✅ #%d 完成（耗時 %s）", j.id, elapsed))
+	b.send(chatID, fmt.Sprintf(b.msgs.JobDone, j.id, elapsed))
 	for i, chunk := range chunks {
 		if len(chunks) > 1 {
 			b.send(chatID, fmt.Sprintf("[%d/%d]\n%s", i+1, len(chunks), chunk))
@@ -394,14 +407,14 @@ func (b *Bot) triggerCronJob(chatID int64, jobID, expr, prompt string) {
 	callCtx, cancel := context.WithTimeout(b.cronCtx, b.config.Timeout)
 	callCtx = provider.WithExecMode(callCtx, config.ExecModeAuto)
 
-	j, err := b.addJob(chatID, "cron", fmt.Sprintf("[排程] %s", prompt), true, cancel)
+	j, err := b.addJob(chatID, "cron", fmt.Sprintf(b.msgs.CronLabel, prompt), true, cancel)
 	if err != nil {
 		cancel()
 		slog.Warn("cron job skipped due to rate limit", "cron_id", jobID, "error", err)
-		b.send(chatID, fmt.Sprintf("⏰ 排程 %s 跳過：%v", jobID, err))
+		b.send(chatID, fmt.Sprintf(b.msgs.CronSkipped, jobID, err))
 		return
 	}
-	b.send(chatID, fmt.Sprintf("⏰ 排程任務 #%d 開始執行...", j.id))
+	b.send(chatID, fmt.Sprintf(b.msgs.CronStarted, j.id))
 	slog.Info("cron job triggered", "chat_id", chatID, "job_id", j.id, "cron_id", jobID)
 
 	go func() {
@@ -425,14 +438,14 @@ func (b *Bot) triggerCronJob(chatID int64, jobID, expr, prompt string) {
 
 		if err != nil {
 			slog.Error("cron job failed", "job_id", j.id, "cron_id", jobID, "elapsed", elapsed, "error", err)
-			b.send(chatID, fmt.Sprintf("❌ 排程任務 #%d 失敗（%s）：%v", j.id, elapsed, err))
+			b.send(chatID, fmt.Sprintf(b.msgs.CronFailed, j.id, elapsed, err))
 			entry.Error = err.Error()
 			b.recordCron(entry)
 			return
 		}
 
 		slog.Info("cron job completed", "job_id", j.id, "cron_id", jobID, "elapsed", elapsed)
-		b.send(chatID, fmt.Sprintf("✅ 排程任務 #%d 完成（耗時 %s）", j.id, elapsed))
+		b.send(chatID, fmt.Sprintf(b.msgs.CronDone, j.id, elapsed))
 		chunks := splitMessage(resp)
 		for i, chunk := range chunks {
 			if len(chunks) > 1 {
@@ -456,14 +469,14 @@ func (b *Bot) cmdCron(msg *tgbotapi.Message, args string) {
 	case strings.HasPrefix(args, "del "):
 		id := strings.TrimSpace(args[4:])
 		if id == "" {
-			b.send(chatID, "用法：/cron del <id>")
+			b.send(chatID, b.msgs.CronDelUsage)
 			return
 		}
 		if err := b.cronMgr.Delete(id); err != nil {
-			b.send(chatID, fmt.Sprintf("❌ 刪除失敗：%v", err))
+			b.send(chatID, fmt.Sprintf(b.msgs.CronDelFailed, err))
 			return
 		}
-		b.send(chatID, fmt.Sprintf("🗑 排程 %s 已刪除", id))
+		b.send(chatID, fmt.Sprintf(b.msgs.CronDeleted, id))
 	default:
 		expr, prompt, err := cronjob.ParseArgs(args)
 		if err != nil {
@@ -472,28 +485,28 @@ func (b *Bot) cmdCron(msg *tgbotapi.Message, args string) {
 		}
 		j, err := b.cronMgr.Add(chatID, expr, prompt)
 		if err != nil {
-			b.send(chatID, fmt.Sprintf("❌ 新增失敗：%v", err))
+			b.send(chatID, fmt.Sprintf(b.msgs.CronAddFailed, err))
 			return
 		}
-		b.send(chatID, fmt.Sprintf("✅ 排程已建立\nID：%s\nexpr：%s\nprompt：%s", j.ID, j.Expr, j.Prompt))
+		b.send(chatID, fmt.Sprintf(b.msgs.CronCreated, j.ID, j.Expr, j.Prompt))
 	}
 }
 
 func (b *Bot) cmdCronList(chatID int64) {
 	jobs := b.cronMgr.List(chatID)
 	if len(jobs) == 0 {
-		b.send(chatID, "📋 目前沒有排程任務。\n用 /cron <expr> <prompt> 新增。")
+		b.send(chatID, b.msgs.CronEmpty)
 		return
 	}
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "📋 排程任務（%d 個）：\n", len(jobs))
+	fmt.Fprintf(&sb, b.msgs.CronListHeader, len(jobs))
 	for _, ji := range jobs {
-		fmt.Fprintf(&sb, "\n🆔 %s\n", ji.ID)
-		fmt.Fprintf(&sb, "  expr：%s\n", ji.Expr)
-		fmt.Fprintf(&sb, "  prompt：%s\n", ji.Prompt)
-		fmt.Fprintf(&sb, "  下次執行：%s\n", ji.NextRun.Local().Format("01/02 15:04:05"))
-		fmt.Fprintf(&sb, "  刪除：/cron del %s", ji.ID)
+		fmt.Fprintf(&sb, b.msgs.CronListItem,
+			ji.ID, ji.Expr, ji.Prompt,
+			ji.NextRun.Local().Format("01/02 15:04:05"),
+			ji.ID,
+		)
 	}
 	b.send(chatID, sb.String())
 }
@@ -514,7 +527,7 @@ func (b *Bot) cmdSession(ctx context.Context, msg *tgbotapi.Message) {
 	case "status":
 		b.cmdSessionStatus(msg.Chat.ID)
 	default:
-		b.send(msg.Chat.ID, "用法：/session start | end | status")
+		b.send(msg.Chat.ID, b.msgs.SessionUsage)
 	}
 }
 
@@ -524,14 +537,14 @@ func (b *Bot) cmdSessionStart(ctx context.Context, msg *tgbotapi.Message) {
 	if s, ok := b.sessions[chatID]; ok && !s.IsClosed() {
 		b.sessionsMu.Unlock()
 		uptime := time.Since(s.StartedAt).Round(time.Second)
-		b.send(chatID, fmt.Sprintf("⚡ 已有活躍的互動 session（運行 %s）。\n請先 /session end 結束。", uptime))
+		b.send(chatID, fmt.Sprintf(b.msgs.SessionAlreadyOpen, uptime))
 		return
 	}
 	sess := session.New(chatID)
 	b.sessions[chatID] = sess
 	b.sessionsMu.Unlock()
 
-	b.send(chatID, "⏳ 正在啟動互動 session...")
+	b.send(chatID, b.msgs.SessionStarting)
 	var sessionApprovalFn provider.ApprovalFunc
 	if b.config.ExecMode == config.ExecModeAsk {
 		sessionApprovalFn = b.makeApprovalFunc(chatID)
@@ -540,10 +553,10 @@ func (b *Bot) cmdSessionStart(ctx context.Context, msg *tgbotapi.Message) {
 		b.sessionsMu.Lock()
 		delete(b.sessions, chatID)
 		b.sessionsMu.Unlock()
-		b.send(chatID, fmt.Sprintf("❌ 啟動失敗：%v", err))
+		b.send(chatID, fmt.Sprintf(b.msgs.SessionStartFailed, err))
 		return
 	}
-	b.send(chatID, "✅ 互動 session 已開啟，直接傳訊息即可對話。\n輸入 /session end 結束。")
+	b.send(chatID, b.msgs.SessionOpened)
 }
 
 func (b *Bot) cmdSessionEnd(chatID int64) {
@@ -555,11 +568,11 @@ func (b *Bot) cmdSessionEnd(chatID int64) {
 	b.sessionsMu.Unlock()
 
 	if !ok {
-		b.send(chatID, "❌ 目前沒有活躍的互動 session。")
+		b.send(chatID, b.msgs.SessionNoActive)
 		return
 	}
 	_ = sess.Close()
-	b.send(chatID, fmt.Sprintf("🔌 互動 session 已結束（共 %d 則訊息）。", sess.MsgCount))
+	b.send(chatID, fmt.Sprintf(b.msgs.SessionEnded, sess.MsgCount))
 }
 
 func (b *Bot) cmdSessionStatus(chatID int64) {
@@ -568,18 +581,18 @@ func (b *Bot) cmdSessionStatus(chatID int64) {
 	b.sessionsMu.Unlock()
 
 	if !ok || sess.IsClosed() {
-		b.send(chatID, "📭 目前沒有活躍的互動 session。\n輸入 /session start 開啟。")
+		b.send(chatID, b.msgs.SessionNoStatus)
 		return
 	}
 	uptime := time.Since(sess.StartedAt).Round(time.Second)
-	b.send(chatID, fmt.Sprintf("⚡ 互動 session 進行中\n⏰ 啟動時間：%s\n⌛ 已運行：%s\n💬 訊息數：%d",
+	b.send(chatID, fmt.Sprintf(b.msgs.SessionStatus,
 		sess.StartedAt.Format("15:04:05"), uptime, sess.MsgCount))
 }
 
 func (b *Bot) handleSessionMessage(ctx context.Context, msg *tgbotapi.Message, sess *session.Session) {
 	text := msg.Text
 	if text == "" {
-		b.send(msg.Chat.ID, "互動 session 目前只支援文字訊息。")
+		b.send(msg.Chat.ID, b.msgs.SessionTextOnly)
 		return
 	}
 	slog.Info("session: forwarding message",
@@ -607,7 +620,7 @@ func (b *Bot) handleSessionMessage(ctx context.Context, msg *tgbotapi.Message, s
 		delete(b.sessions, msg.Chat.ID)
 		b.sessionsMu.Unlock()
 		_ = sess.Close()
-		b.send(msg.Chat.ID, fmt.Sprintf("❌ Session 發生錯誤，已自動關閉：%v", res.err))
+		b.send(msg.Chat.ID, fmt.Sprintf(b.msgs.SessionError, res.err))
 		return
 	}
 
@@ -642,7 +655,7 @@ func (b *Bot) sessionIdleSweep(ctx context.Context) {
 				delete(b.sessions, chatID)
 				_ = sess.Close()
 				slog.Info("session: idle timeout, closing", "chat_id", chatID)
-				b.send(chatID, fmt.Sprintf("⏰ 互動 session 閒置超過 %s，已自動關閉。", session.IdleTimeout))
+				b.send(chatID, fmt.Sprintf(b.msgs.SessionIdleTimeout, session.IdleTimeout))
 			}
 			b.sessionsMu.Unlock()
 		}
@@ -683,7 +696,7 @@ func (b *Bot) addJob(chatID int64, from, question string, isCron bool, cancel co
 			}
 		}
 		if count >= b.config.MaxCronJobs {
-			return nil, fmt.Errorf("已達排程同時執行上限（%d）", b.config.MaxCronJobs)
+			return nil, fmt.Errorf(b.msgs.CronLimitHit, b.config.MaxCronJobs)
 		}
 	} else if !isCron && b.config.MaxJobs > 0 {
 		count := 0
@@ -693,7 +706,7 @@ func (b *Bot) addJob(chatID int64, from, question string, isCron bool, cancel co
 			}
 		}
 		if count >= b.config.MaxJobs {
-			return nil, fmt.Errorf("已達同時執行上限（%d），請稍後再試或 /stop 取消現有任務", b.config.MaxJobs)
+			return nil, fmt.Errorf(b.msgs.JobLimitHit, b.config.MaxJobs)
 		}
 	}
 
@@ -720,25 +733,7 @@ func (b *Bot) removeJob(id int) {
 }
 
 func (b *Bot) cmdHelp(chatID int64) {
-	text := `📖 tgconn 支援的指令：
-
-任意文字 — 轉發給 LLM，立即 ACK，完成後推送結果
-📷 圖片 / 📎 檔案 — 下載後讓 LLM 分析
-🎙️ 語音訊息 — 轉錄為文字後送出（需 --enable-voice）
-
-/cron <expr> <prompt> — 新增排程任務（標準 5 欄位 cron 或 @daily 等）
-/cron list — 列出排程任務
-/cron del <id> — 刪除排程任務
-/? 或 /help — 顯示此說明
-/list — 列出執行中的指令
-/stop <id> — 停止指定的執行中指令
-/status — 顯示 bot 狀態（uptime、provider、執行中指令）
-/history — 顯示最近對話記錄
-
-/session start — 開啟互動 session（Claude 原生記住對話脈絡）
-/session end — 結束互動 session
-/session status — 查看 session 狀態（uptime、訊息數）`
-	b.send(chatID, text)
+	b.send(chatID, b.msgs.Help)
 }
 
 func (b *Bot) cmdList(chatID int64) {
@@ -750,27 +745,27 @@ func (b *Bot) cmdList(chatID int64) {
 	b.jobsMu.Unlock()
 
 	if len(snapshot) == 0 {
-		b.send(chatID, "📋 目前沒有執行中的指令。")
+		b.send(chatID, b.msgs.ListEmpty)
 		return
 	}
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "📋 執行中的指令（%d）：\n", len(snapshot))
+	fmt.Fprintf(&sb, b.msgs.ListHeader, len(snapshot))
 	for _, j := range snapshot {
 		elapsed := time.Since(j.startedAt).Round(time.Second)
-		fmt.Fprintf(&sb, "• #%d %s — %q — 已執行 %s\n", j.id, j.from, j.preview, elapsed)
+		fmt.Fprintf(&sb, b.msgs.ListLine, j.id, j.from, j.preview, elapsed)
 	}
 	b.send(chatID, strings.TrimRight(sb.String(), "\n"))
 }
 
 func (b *Bot) cmdStop(chatID int64, arg string) {
 	if arg == "" {
-		b.send(chatID, "用法：/stop <指令編號>，例如 /stop 1")
+		b.send(chatID, b.msgs.StopUsage)
 		return
 	}
 	id, err := strconv.Atoi(arg)
 	if err != nil || id <= 0 {
-		b.send(chatID, fmt.Sprintf("❌ 無效的指令編號：%q", arg))
+		b.send(chatID, fmt.Sprintf(b.msgs.StopBadID, arg))
 		return
 	}
 
@@ -782,13 +777,13 @@ func (b *Bot) cmdStop(chatID int64, arg string) {
 	b.jobsMu.Unlock()
 
 	if !ok {
-		b.send(chatID, fmt.Sprintf("❌ 找不到指令 #%d（可能已完成）", id))
+		b.send(chatID, fmt.Sprintf(b.msgs.StopNotFound, id))
 		return
 	}
 
 	j.cancel()
 	slog.Info("job stop requested", "job_id", id, "chat_id", chatID)
-	b.send(chatID, fmt.Sprintf("🛑 已送出停止請求給指令 #%d", id))
+	b.send(chatID, fmt.Sprintf(b.msgs.StopSent, id))
 }
 
 // ── Media handlers ────────────────────────────────────────────────────────────
@@ -799,7 +794,7 @@ func (b *Bot) handleSticker(msg *tgbotapi.Message) {
 		emoji = " " + msg.Sticker.Emoji
 	}
 	slog.Debug("sticker received", "chat_id", msg.Chat.ID, "emoji", emoji)
-	b.send(msg.Chat.ID, fmt.Sprintf("收到貼圖%s，但我只能處理文字、圖片和檔案喔！", emoji))
+	b.send(msg.Chat.ID, fmt.Sprintf(b.msgs.MediaSticker, emoji))
 }
 
 func (b *Bot) handleUnsupportedMedia(chatID int64, msg string) {
@@ -818,16 +813,16 @@ func (b *Bot) handlePhoto(ctx context.Context, msg *tgbotapi.Message) {
 	slog.Info("photo received, downloading", "chat_id", msg.Chat.ID, "message_id", msg.MessageID, "size", photo.FileSize)
 	localPath, err := b.dl.Download(ctx, photo.FileID, photo.FileSize, msg.Chat.ID, filename)
 	if err != nil {
-		b.send(msg.Chat.ID, mediaDownloadError(err))
+		b.send(msg.Chat.ID, b.mediaDownloadError(err))
 		return
 	}
 
 	caption := msg.Caption
-	displayQuestion := "📷 圖片"
+	displayQuestion := b.msgs.MediaPhotoDisplay
 	if caption != "" {
-		displayQuestion = fmt.Sprintf("📷 圖片：%s", caption)
+		displayQuestion = fmt.Sprintf(b.msgs.MediaPhotoCaption, caption)
 	}
-	rawPrompt := buildMediaPrompt("圖片", localPath, filename, caption)
+	rawPrompt := b.buildMediaPrompt(b.msgs.MediaTypeImage, localPath, filename, caption)
 	b.executeAndReply(ctx, msg, displayQuestion, rawPrompt)
 }
 
@@ -841,22 +836,22 @@ func (b *Bot) handleDocument(ctx context.Context, msg *tgbotapi.Message) {
 	slog.Info("document received, downloading", "chat_id", msg.Chat.ID, "filename", filename, "size", doc.FileSize)
 	localPath, err := b.dl.Download(ctx, doc.FileID, doc.FileSize, msg.Chat.ID, filename)
 	if err != nil {
-		b.send(msg.Chat.ID, mediaDownloadError(err))
+		b.send(msg.Chat.ID, b.mediaDownloadError(err))
 		return
 	}
 
 	caption := msg.Caption
-	displayQuestion := fmt.Sprintf("📎 %s", filename)
+	displayQuestion := fmt.Sprintf(b.msgs.MediaDocDisplay, filename)
 	if caption != "" {
-		displayQuestion = fmt.Sprintf("📎 %s：%s", filename, caption)
+		displayQuestion = fmt.Sprintf(b.msgs.MediaDocCaption, filename, caption)
 	}
-	rawPrompt := buildMediaPrompt("檔案", localPath, filename, caption)
+	rawPrompt := b.buildMediaPrompt(b.msgs.MediaTypeFile, localPath, filename, caption)
 	b.executeAndReply(ctx, msg, displayQuestion, rawPrompt)
 }
 
 func (b *Bot) handleVoice(ctx context.Context, msg *tgbotapi.Message) {
 	if !b.config.EnableVoice {
-		b.send(msg.Chat.ID, "語音訊息目前未啟用，請以文字傳送指令（或使用 --enable-voice 啟動 tgconn）")
+		b.send(msg.Chat.ID, b.msgs.MediaVoiceDisabled)
 		return
 	}
 
@@ -864,43 +859,44 @@ func (b *Bot) handleVoice(ctx context.Context, msg *tgbotapi.Message) {
 	slog.Info("voice received, downloading", "chat_id", msg.Chat.ID, "message_id", msg.MessageID)
 	localPath, err := b.dl.Download(ctx, msg.Voice.FileID, msg.Voice.FileSize, msg.Chat.ID, filename)
 	if err != nil {
-		b.send(msg.Chat.ID, mediaDownloadError(err))
+		b.send(msg.Chat.ID, b.mediaDownloadError(err))
 		return
 	}
 
 	slog.Info("transcribing voice", "chat_id", msg.Chat.ID, "path", localPath)
-	b.send(msg.Chat.ID, "🎙️ 正在轉錄語音...")
+	b.send(msg.Chat.ID, b.msgs.MediaVoiceTranscribing)
 	text, err := transcriber.Transcribe(ctx, localPath, b.config.WhisperBackend, b.config.WhisperModel)
 	if err != nil {
 		slog.Error("whisper transcription failed", "chat_id", msg.Chat.ID, "error", err)
-		b.send(msg.Chat.ID, fmt.Sprintf("語音轉錄失敗：%v", err))
+		b.send(msg.Chat.ID, fmt.Sprintf(b.msgs.MediaVoiceFailed, err))
 		return
 	}
 
 	slog.Info("voice transcribed", "chat_id", msg.Chat.ID, "runes", utf8.RuneCountInString(text))
-	b.send(msg.Chat.ID, fmt.Sprintf("🎙️ 識別結果：\n%s", text))
-	b.executeAndReply(ctx, msg, fmt.Sprintf("🎙️ %s", text), text)
+	b.send(msg.Chat.ID, fmt.Sprintf(b.msgs.MediaVoiceResult, text))
+	b.executeAndReply(ctx, msg, fmt.Sprintf(b.msgs.MediaVoiceResult, text), text)
 }
 
 // buildMediaPrompt formats a prompt that includes file context for the LLM.
-func buildMediaPrompt(mediaType, localPath, filename, caption string) string {
+func (b *Bot) buildMediaPrompt(mediaType, localPath, filename, caption string) string {
+	m := b.msgs
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "使用者傳送了一個%s：%s\n", mediaType, filename)
-	fmt.Fprintf(&sb, "已下載至：%s\n", localPath)
+	fmt.Fprintf(&sb, m.MediaPromptSent+"\n", mediaType, filename)
+	fmt.Fprintf(&sb, m.MediaPromptSavedTo+"\n", localPath)
 	if caption != "" {
-		fmt.Fprintf(&sb, "說明：%s\n", caption)
-		fmt.Fprintf(&sb, "\n請根據上述說明與%s完成任務。", mediaType)
+		fmt.Fprintf(&sb, m.MediaPromptCaption+"\n", caption)
+		fmt.Fprintf(&sb, "\n"+m.MediaPromptTask, mediaType)
 	} else {
-		fmt.Fprintf(&sb, "\n請問你想如何處理這個%s？", mediaType)
+		fmt.Fprintf(&sb, "\n"+m.MediaPromptAsk, mediaType)
 	}
 	return sb.String()
 }
 
-func mediaDownloadError(err error) string {
+func (b *Bot) mediaDownloadError(err error) string {
 	if errors.Is(err, downloader.ErrFileTooLarge) {
-		return "❌ 檔案超過 20 MB 限制，無法下載"
+		return b.msgs.MediaFileTooLarge
 	}
-	return fmt.Sprintf("❌ 檔案下載失敗：%v", err)
+	return fmt.Sprintf(b.msgs.MediaDownloadFailed, err)
 }
 
 // ── Context / history ─────────────────────────────────────────────────────────
@@ -919,11 +915,11 @@ func (b *Bot) buildPrompt(chatID int64, question string) string {
 	}
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "以下是我們之前的對話記錄，請根據此背景回答新問題：\n\n")
+	fmt.Fprintf(&sb, "%s", b.msgs.HistoryCtxHeader)
 	for _, ex := range history {
-		fmt.Fprintf(&sb, "[User]: %s\n[Assistant]: %s\n\n", ex.Question, ex.Answer)
+		fmt.Fprintf(&sb, b.msgs.HistoryCtxEntry, ex.Question, ex.Answer)
 	}
-	fmt.Fprintf(&sb, "---\n新問題：\n%s", question)
+	fmt.Fprintf(&sb, b.msgs.HistoryCtxTail, question)
 
 	slog.Debug("prompt with history built",
 		"chat_id", chatID,
@@ -935,21 +931,21 @@ func (b *Bot) buildPrompt(chatID int64, question string) string {
 
 func (b *Bot) cmdHistory(chatID int64) {
 	if b.recorder == nil {
-		b.send(chatID, "❌ 歷史記錄功能未啟用")
+		b.send(chatID, b.msgs.HistoryDisabled)
 		return
 	}
 	history, err := b.recorder.LoadRecent(chatID, b.config.HistorySize)
 	if err != nil {
-		b.send(chatID, fmt.Sprintf("❌ 無法讀取歷史記錄：%v", err))
+		b.send(chatID, fmt.Sprintf(b.msgs.HistoryLoadError, err))
 		return
 	}
 	if len(history) == 0 {
-		b.send(chatID, "📭 目前沒有對話記錄。")
+		b.send(chatID, b.msgs.HistoryEmpty)
 		return
 	}
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "📖 最近 %d 筆對話記錄：\n\n", len(history))
+	fmt.Fprintf(&sb, b.msgs.HistoryHeader, len(history))
 	for i, ex := range history {
 		ts := ex.Time.Format("01/02 15:04")
 		qPreview := []rune(ex.Question)
@@ -977,20 +973,20 @@ func (b *Bot) cmdStatus(chatID int64) {
 	startedAt := b.startTime.Format("2006-01-02 15:04:05")
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "🟢 tgconn 運行中\n\n")
-	fmt.Fprintf(&sb, "🤖 Bot：@%s\n", b.api.Self.UserName)
-	fmt.Fprintf(&sb, "🖥  主機：%s\n", b.hostname)
-	fmt.Fprintf(&sb, "⏰ 啟動時間：%s\n", startedAt)
-	fmt.Fprintf(&sb, "⌛ 已運行：%s\n", uptime)
-	fmt.Fprintf(&sb, "🔧 Provider：%s\n", b.config.Provider)
+	fmt.Fprintf(&sb, "%s", b.msgs.StatusRunning)
+	fmt.Fprintf(&sb, b.msgs.StatusBot, b.api.Self.UserName)
+	fmt.Fprintf(&sb, b.msgs.StatusHost, b.hostname)
+	fmt.Fprintf(&sb, b.msgs.StatusStartedAt, startedAt)
+	fmt.Fprintf(&sb, b.msgs.StatusUptime, uptime)
+	fmt.Fprintf(&sb, b.msgs.StatusProvider, b.config.Provider)
 
 	if len(activeJobs) == 0 {
-		fmt.Fprintf(&sb, "\n📋 執行中的指令：（無）")
+		fmt.Fprintf(&sb, "%s", b.msgs.StatusNoJobs)
 	} else {
-		fmt.Fprintf(&sb, "\n📋 執行中的指令（%d）：\n", len(activeJobs))
+		fmt.Fprintf(&sb, b.msgs.StatusJobsHeader, len(activeJobs))
 		for _, j := range activeJobs {
 			elapsed := time.Since(j.startedAt).Round(time.Second)
-			fmt.Fprintf(&sb, "  • #%d %s — %q — 已執行 %s\n", j.id, j.from, j.preview, elapsed)
+			fmt.Fprintf(&sb, b.msgs.StatusJobLine, j.id, j.from, j.preview, elapsed)
 		}
 	}
 
@@ -1044,12 +1040,12 @@ func (b *Bot) makeApprovalFunc(chatID int64) provider.ApprovalFunc {
 		if r := []rune(displayPrompt); len(r) > 400 {
 			displayPrompt = string(r[:400]) + "…"
 		}
-		text := fmt.Sprintf("🔐 Claude 需要執行授權：\n\n%s", displayPrompt)
+		text := fmt.Sprintf(b.msgs.ApprovalPrompt, displayPrompt)
 
 		keyboard := tgbotapi.NewInlineKeyboardMarkup(
 			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("✅ 允許", key+"_y"),
-				tgbotapi.NewInlineKeyboardButtonData("❌ 拒絕", key+"_n"),
+				tgbotapi.NewInlineKeyboardButtonData(b.msgs.ApprovalAllow, key+"_y"),
+				tgbotapi.NewInlineKeyboardButtonData(b.msgs.ApprovalDeny, key+"_n"),
 			),
 		)
 		m := tgbotapi.NewMessage(chatID, text)
@@ -1070,16 +1066,16 @@ func (b *Bot) makeApprovalFunc(chatID int64) provider.ApprovalFunc {
 			slog.Warn("approval timed out", "chat_id", chatID, "key", key)
 			// Edit the message to show it expired.
 			edit := tgbotapi.NewEditMessageText(chatID, sent.MessageID,
-				text+"\n\n⏰ 已逾時，自動拒絕")
+				text+"\n\n"+b.msgs.ApprovalTimeout)
 			_, _ = b.api.Send(edit)
 			return false, fmt.Errorf("approval timed out")
 		case <-ctx.Done():
 			return false, ctx.Err()
 		}
 
-		label := "已拒絕 ❌"
+		label := b.msgs.ApprovalDenied
 		if allowed {
-			label = "已允許 ✅"
+			label = b.msgs.ApprovalAllowed
 		}
 		edit := tgbotapi.NewEditMessageText(chatID, sent.MessageID,
 			text+"\n\n"+label)
@@ -1125,6 +1121,59 @@ func (b *Bot) handleCallbackQuery(cq *tgbotapi.CallbackQuery) {
 	case pa.ch <- allowed:
 	default:
 	}
+}
+
+// isGroupChat reports whether a message came from a group or supergroup.
+func isGroupChat(msg *tgbotapi.Message) bool {
+	return msg.Chat.Type == "group" || msg.Chat.Type == "supergroup"
+}
+
+// botAddressed reports whether the message was directed at the bot:
+// either an explicit @mention in the text entities or a direct reply to the bot.
+func (b *Bot) botAddressed(msg *tgbotapi.Message) bool {
+	if msg.ReplyToMessage != nil && msg.ReplyToMessage.From != nil &&
+		msg.ReplyToMessage.From.ID == b.api.Self.ID {
+		return true
+	}
+	want := strings.ToLower("@" + b.api.Self.UserName)
+	runes := []rune(msg.Text)
+	for _, e := range msg.Entities {
+		if e.Type != "mention" || e.Offset+e.Length > len(runes) {
+			continue
+		}
+		if strings.ToLower(string(runes[e.Offset:e.Offset+e.Length])) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// stripBotMention removes @botUsername from standalone mention entities and strips
+// the "@botUsername" suffix from bot_command entities (e.g. "/help@bot" → "/help").
+// Entities are processed in reverse order so earlier offsets remain valid.
+func stripBotMention(text, botUsername string, entities []tgbotapi.MessageEntity) string {
+	suffix := strings.ToLower("@" + botUsername)
+	runes := []rune(text)
+	for i := len(entities) - 1; i >= 0; i-- {
+		e := entities[i]
+		end := e.Offset + e.Length
+		if end > len(runes) {
+			continue
+		}
+		entityText := strings.ToLower(string(runes[e.Offset:end]))
+		switch e.Type {
+		case "mention":
+			if entityText == suffix {
+				runes = append(runes[:e.Offset], runes[end:]...)
+			}
+		case "bot_command":
+			if strings.HasSuffix(entityText, suffix) {
+				cutAt := end - len([]rune(suffix))
+				runes = append(runes[:cutAt], runes[end:]...)
+			}
+		}
+	}
+	return strings.TrimSpace(string(runes))
 }
 
 func senderName(msg *tgbotapi.Message) string {

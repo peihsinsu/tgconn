@@ -76,7 +76,18 @@ tgconn init
 2. 傳送 `/newbot` 並依指示操作。
 3. 複製 **Bot Token**（格式如 `123456789:ABCDefGhIJKlmNoPQRSTuvWXyz`）。
 
-#### 2. 取得 Chat ID
+#### 2. （選用）啟用群組訊息支援
+
+Telegram 預設為 Bot 開啟**群組隱私模式（Group Privacy Mode）**，在此模式下 Bot 只會收到 `/指令`，一般的群組訊息對 Bot 來說是不可見的。
+
+若要讓 Bot 回應群組中的所有訊息：
+
+1. 開啟 [@BotFather](https://t.me/BotFather) 並傳送 `/mybots`。
+2. 選擇你的 Bot → **Bot Settings** → **Group Privacy** → **Turn off**。
+
+> **注意：** 群組的 Chat ID 為負數（例如 `-1001234567890`）。可將群組訊息轉發給 [@userinfobot](https://t.me/userinfobot) 取得，再加入 config 的 `allowed_chats` 中。
+
+#### 3. 取得 Chat ID
 
 向 [@userinfobot](https://t.me/userinfobot) 傳送任意訊息，它會回覆你的數字 Chat ID。
 
@@ -126,6 +137,7 @@ tgconn --provider claude connect \
 | `anthropic_api_key` | `ANTHROPIC_API_KEY`    | `--api-key`        | Anthropic API Key（替代 `~/.claude` session 認證） |
 | `max_jobs`          | —                      | `--max-jobs`       | 最大同時執行的一般任務數（0 = 無限制） |
 | `max_cron_jobs`     | —                      | `--max-cron-jobs`  | 最大同時執行的排程任務數（0 = 無限制） |
+| `language`          | —                      | —                  | Bot 訊息語系：`en`（預設）、`zh-TW` |
 | `debug`             | —                      | `--debug`          | 啟用詳細 debug 日誌 |
 
 ### 設定檔範例
@@ -143,6 +155,7 @@ history_size: 10
 anthropic_api_key: ""   # 留空則使用 ~/.claude session 認證
 max_jobs: 0             # 最大同時一般任務數（0 = 無限制）
 max_cron_jobs: 0        # 最大同時排程任務數（0 = 無限制）
+language: en            # Bot 訊息語系：en（預設）、zh-TW
 ```
 
 ---
