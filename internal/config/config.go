@@ -27,8 +27,9 @@ type Config struct {
 	WhisperModel    string // backend-specific model identifier; empty = backend default (openai-whisper only)
 	ExecMode        string
 	AnthropicAPIKey string
-	MaxJobs         int // max concurrent regular jobs per bot (0 = unlimited)
-	MaxCronJobs     int // max concurrent cron executions (0 = unlimited)
+	MaxJobs         int    // max concurrent regular jobs per bot (0 = unlimited)
+	MaxCronJobs     int    // max concurrent cron executions (0 = unlimited)
+	Language        string // BCP 47 language tag for bot messages; empty = "en"
 }
 
 func Load() (*Config, error) {
@@ -45,6 +46,7 @@ func Load() (*Config, error) {
 		AnthropicAPIKey: viper.GetString("anthropic_api_key"),
 		MaxJobs:         viper.GetInt("max_jobs"),
 		MaxCronJobs:     viper.GetInt("max_cron_jobs"),
+		Language:        viper.GetString("language"),
 	}
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 2 * time.Hour

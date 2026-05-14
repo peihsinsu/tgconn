@@ -76,7 +76,18 @@ tgconn init
 2. 傳送 `/newbot` 並依指示操作。
 3. 複製 **Bot Token**（格式如 `123456789:ABCDefGhIJKlmNoPQRSTuvWXyz`）。
 
-#### 2. 取得 Chat ID
+#### 2. （選用）啟用群組訊息支援
+
+Telegram 預設為 Bot 開啟**群組隱私模式（Group Privacy Mode）**，在此模式下 Bot 只會收到 `/指令`，一般的群組訊息對 Bot 來說是不可見的。
+
+若要讓 Bot 回應群組中的所有訊息：
+
+1. 開啟 [@BotFather](https://t.me/BotFather) 並傳送 `/mybots`。
+2. 選擇你的 Bot → **Bot Settings** → **Group Privacy** → **Turn off**。
+
+> **注意：** 群組的 Chat ID 為負數（例如 `-1001234567890`）。可將群組訊息轉發給 [@userinfobot](https://t.me/userinfobot) 取得，再加入 config 的 `allowed_chats` 中。
+
+#### 3. 取得 Chat ID
 
 向 [@userinfobot](https://t.me/userinfobot) 傳送任意訊息，它會回覆你的數字 Chat ID。
 
@@ -126,6 +137,7 @@ tgconn --provider claude connect \
 | `anthropic_api_key` | `ANTHROPIC_API_KEY`    | `--api-key`        | Anthropic API Key（替代 `~/.claude` session 認證） |
 | `max_jobs`          | —                      | `--max-jobs`       | 最大同時執行的一般任務數（0 = 無限制） |
 | `max_cron_jobs`     | —                      | `--max-cron-jobs`  | 最大同時執行的排程任務數（0 = 無限制） |
+| `language`          | —                      | —                  | Bot 訊息語系：`en`（預設）、`zh-TW` |
 | `debug`             | —                      | `--debug`          | 啟用詳細 debug 日誌 |
 
 ### 設定檔範例
@@ -143,6 +155,7 @@ history_size: 10
 anthropic_api_key: ""   # 留空則使用 ~/.claude session 認證
 max_jobs: 0             # 最大同時一般任務數（0 = 無限制）
 max_cron_jobs: 0        # 最大同時排程任務數（0 = 無限制）
+language: en            # Bot 訊息語系：en（預設）、zh-TW
 ```
 
 ---
@@ -269,17 +282,37 @@ tgconn 支援兩種後端，啟動時 `--whisper-backend auto`（預設）會自
 
 #### 方式 A — whisper.cpp（推薦：快、本地、免 Python 依賴）
 
+**macOS**
 ```bash
-# 1. 安裝執行檔（macOS）
 brew install whisper-cpp ffmpeg
+```
 
-# 2. 下載模型（中文推薦 medium，約 1.5 GB）
+**Linux（Debian/Ubuntu）**
+```bash
+apt install ffmpeg
+# whisper-cli：從 https://github.com/ggerganov/whisper.cpp/releases 下載預編譯版
+# 或自行編譯：git clone https://github.com/ggerganov/whisper.cpp && cd whisper.cpp && make
+```
+
+**Windows**
+```
+winget install FFmpeg
+# whisper-cli：從 https://github.com/ggerganov/whisper.cpp/releases 下載 whisper-cli.exe
+# 放到 %PATH% 中的目錄
+# 設定 WHISPER_CPP_MODELS=C:\Users\<你的帳號>\whisper-models（Windows 不符合預設路徑慣例）
+```
+
+**下載模型**
+```bash
+# macOS / Linux
 mkdir -p ~/.cache/whisper-cpp
 curl -L --progress-bar \
   -o ~/.cache/whisper-cpp/ggml-medium.bin \
   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin
+```
 
-# 3. 啟動
+**啟動**
+```bash
 tgconn --provider claude connect --allow-chat 123456789 \
   --enable-voice --whisper-model medium
 ```
@@ -308,6 +341,45 @@ tgconn --provider claude connect --allow-chat 123456789 --enable-voice
 可選 `--whisper-model turbo`（或 `tiny`/`base`/`small`/`medium`/`large-v3`），留空則用 whisper 自己的預設。
 
 > macOS 26（Tahoe）+ Python 3.12 + x86_64 在裝 openai-whisper 時可能因 `llvmlite` wheel 不存在而失敗（要編 LLVM）。建議改用方式 A，或改用 Python 3.11。
+
+### 語音訊息處理流程
+
+在 Telegram 傳送語音訊息時：
+
+```
+長按麥克風錄音 → 放開送出
+    ↓
+tgconn 下載 .ogg（Opus）到 .tgconn/tmp/<chat_id>/
+    ↓
+[whisper.cpp]     ffmpeg 轉換 .ogg → 16kHz mono WAV
+                  whisper-cli -m <model.bin> -f <wav> -otxt
+[openai-whisper]  whisper <ogg> --output_format txt
+    ↓
+讀取 .txt 轉錄結果（上限 4000 字元）
+    ↓
+轉錄文字作為 prompt 送給 LLM
+    ↓
+回應推送回 Telegram 聊天室
+```
+
+任務追蹤顯示的問題欄位會顯示為 `🎙️ <轉錄文字>`。
+
+### 語音功能限制
+
+- **僅支援 Telegram 語音訊息** — 即 🎙️ 錄音按鈕產生的訊息。以附件形式傳送的音訊檔（.mp3、.m4a 等）**不支援**，請改用語音訊息。
+- **轉錄上限 4000 字元** — 過長的錄音會被截斷。
+- **不支援 `/session` 互動模式** — session 僅接受文字訊息。
+- **語言自動偵測** — whisper 自動判斷語言，目前無法針對單一聊天室指定語言。
+
+### 除錯指引
+
+| 錯誤訊息 | 原因 | 解決方式 |
+|---------|------|---------|
+| `whisper-cli not found` | 執行檔不在 `$PATH` | `brew install whisper-cpp`（macOS）或下載預編譯版 |
+| `ffmpeg required to convert audio` | `ffmpeg` 不在 `$PATH` | `brew install ffmpeg` / `apt install ffmpeg` |
+| `whisper model … not found` | 模型檔案不存在 | 下載模型；Windows 需設定 `$WHISPER_CPP_MODELS` |
+| `whisper-cli failed` | 模型路徑錯誤或檔案損毀 | 重新下載模型；用 `ls ~/.cache/whisper-cpp/` 確認路徑 |
+| `語音訊息目前未啟用` | 啟動時未加 `--enable-voice` | 加上 `--enable-voice` 重新啟動 |
 
 ---
 
