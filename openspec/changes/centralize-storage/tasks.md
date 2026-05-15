@@ -4,11 +4,11 @@
 - [x] 1.3 實作 `Resolver.Subdir(name string) string`：回傳 `<projectDir>/<name>/`（tmp、cron 等共用）
 - [x] 1.4 寫單元測試：`EncodeCWD` 對常見路徑、根目錄、含空白路徑的行為
 
-## 2. Config 擴充 (`internal/config/config.go`) *(Part 2)*
-- [ ] 2.1 `Config` 新增 `TmpRetentionHours`、`LogRetentionDays`、`HistoryMaxEntries`
-- [ ] 2.2 `Load()` 讀取對應 viper key，套用預設值（24、30、100）
-- [ ] 2.3 `Validate()` 加入非負值檢查，違反回傳清楚錯誤
-- [ ] 2.4 config_test.go 補測試：預設值套用、負值拒絕
+## 2. Config 擴充 (`internal/config/config.go`)
+- [x] 2.1 `Config` 新增 `TmpRetentionHours`、`LogRetentionDays`、`HistoryMaxEntries`
+- [x] 2.2 `Load()` 用 `viper.SetDefault` 套用預設值（24、30、100）；explicit `0` 保留供 disable 使用
+- [x] 2.3 `Validate()` 加入非負值檢查，違反回傳清楚錯誤
+- [x] 2.4 config_test.go 補測試：預設值套用、explicit-zero 保留、負值拒絕
 
 ## 3. Recorder 依賴注入 (`internal/recorder/recorder.go`)
 - [x] 3.1 移除 const `logDir` / `cronLogDir`，改為 `Recorder` struct field（`dir`、`cronDir`）
@@ -22,14 +22,14 @@
 - [x] 4.4 成功後在原 `<cwd>/.tgconn/` 建立 `MOVED_TO_<encoded>.txt`（含絕對路徑與 RFC3339 時間戳）
 - [x] 4.5 單元測試：legacy 存在搬移成功、衝突案例、無 legacy 跳過、re-entrant、empty target 容忍、copy fallback
 
-## 5. Cleanup 模組 (`internal/storage/cleanup.go`) *(Part 2)*
-- [ ] 5.1 新增 `cleanup.go`：`RunStartup(cfg StartupConfig) Result`
-- [ ] 5.2 實作 `cleanTmp(dir string, olderThan time.Duration) (removed int, freed int64, err error)`
-- [ ] 5.3 實作 `cleanLogs(dir string, olderThan time.Duration) (removed, freed, err)`，0 表示 skip
-- [ ] 5.4 實作 `compactHistory(dir string, maxEntries int) (compacted int, err error)`，0 表示 skip
-- [ ] 5.5 實作 `Stats` struct 回傳清理摘要供 logging
-- [ ] 5.6 cleanTmp 完成後刪除空 `<chatID>/` 子目錄
-- [ ] 5.7 單元測試（用 `t.TempDir()` 構造各種檔案與 mtime）
+## 5. Cleanup 模組 (`internal/storage/cleanup.go`)
+- [x] 5.1 新增 `cleanup.go`：`RunStartup(cfg StartupConfig) Stats`
+- [x] 5.2 實作 `cleanTmp(dir, olderThan)`：mtime 過期就刪
+- [x] 5.3 實作 `cleanLogs(projectDir, olderThan)`：只清 `*.jsonl`，排除 `history_*` 與 `cron/<id>.json`
+- [x] 5.4 實作 `compactHistory(projectDir, maxEntries)`：原檔重寫保留末尾 N 筆（atomic via temp + rename）
+- [x] 5.5 實作 `Stats`：tmp/log/history 各自的計數與 bytes freed
+- [x] 5.6 cleanTmp 完成後刪除空 `<chatID>/` 子目錄，保留 tmp 根
+- [x] 5.7 單元測試：9 個 case 涵蓋 stale-vs-fresh、空目錄移除、missing dir noop、history exclusion、cron def exclusion、compaction trim、below-threshold noop、non-history ignore、disabled-retention、end-to-end
 
 ## 6. Bot 整合 (`internal/bot/bot.go`)
 - [x] 6.1 `New` 改為接收 `projectDir string`
@@ -47,27 +47,27 @@
 - [x] 8.1 取得 cwd → 解析 `storage.NewResolver().ProjectDir()`
 - [x] 8.2 呼叫 `storage.MigrateLegacy(legacyDir, targetDir)`，失敗中止啟動
 - [x] 8.3 `os.MkdirAll(targetDir, 0755)`
-- [ ] 8.4 呼叫 `cleanup.RunStartup(...)`，log 清理摘要 *(Part 2)*
+- [x] 8.4 呼叫 `storage.RunStartup(...)`，log 清理摘要
 - [x] 8.5 `recorder.New(targetDir)` / `bot.New(..., projectDir)`
 - [x] 8.6 啟動 log 中印出實際使用的 storage path
 
-## 9. Clean 子指令 (`cmd/clean.go`) *(Part 2)*
-- [ ] 9.1 新增 `cleanCmd`（cobra）：支援 `--tmp` / `--logs` / `--history` / `--all` / `--dry-run` / `--yes`
-- [ ] 9.2 解析旗標 → 組出要處理的檔案清單（含大小）
-- [ ] 9.3 `--dry-run`：印清單與總大小,不刪
-- [ ] 9.4 `--history` 或 `--all` 且非 `--yes` 且非 `--dry-run`：互動 prompt `yes` 才刪
-- [ ] 9.5 印出最終結果（刪除檔案數、釋放空間）
-- [ ] 9.6 無旗標 → 印 usage 並 exit 非 0
-- [ ] 9.7 註冊 `cleanCmd` 進 `rootCmd`
+## 9. Clean 子指令 (`cmd/clean.go`)
+- [x] 9.1 新增 `cleanCmd`（cobra）：支援 `--tmp` / `--logs` / `--history` / `--all` / `--dry-run` / `--yes`
+- [x] 9.2 解析旗標 → 組出要處理的檔案清單（含大小）
+- [x] 9.3 `--dry-run`：印清單與總大小，不刪
+- [x] 9.4 `--history` 或 `--all` 且非 `--yes` 且非 `--dry-run`：互動 prompt `yes` 才刪
+- [x] 9.5 印出最終結果（刪除檔案數、釋放空間）
+- [x] 9.6 無旗標 → 印 usage 並 exit 非 0（e2e 驗證 exit=1）
+- [x] 9.7 註冊 `cleanCmd` 進 `rootCmd`
 
 ## 10. 文件與驗證
-- [ ] 10.1 更新 `CLAUDE.md`：儲存路徑說明、retention 設定、`tgconn clean` 用法
-- [ ] 10.2 `openspec validate centralize-storage --strict` 通過
-- [x] 10.3 `go vet ./...` 通過（Part 1）
-- [x] 10.4 `go test ./...` 全部通過（Part 1；既有 `TestLoad_DefaultTimeout` 失敗為 pre-existing 15m vs 2h 不一致，與本改動無關）
-- [ ] 10.5 實機驗證：
-  - [ ] 10.5.1 既有 `.tgconn/` 存在 → 啟動後資料搬到中央位置，麵包屑留存
-  - [ ] 10.5.2 無 `.tgconn/` 啟動 → 直接用中央位置，不報錯
-  - [ ] 10.5.3 跑 `tgconn clean --all --dry-run` → 只列不刪 *(Part 2)*
-  - [ ] 10.5.4 跑 `tgconn clean --history` → 出現確認 prompt *(Part 2)*
-  - [ ] 10.5.5 voice 轉錄完成後 `.wav` / `.txt` 確實消失
+- [x] 10.1 更新 `CLAUDE.md`：儲存路徑說明、retention 設定、`tgconn clean` 用法
+- [ ] 10.2 `openspec validate centralize-storage --strict` 通過（CLI 未安裝，手動 review 結構符合 AGENTS.md）
+- [x] 10.3 `go vet ./...` 通過
+- [x] 10.4 `go test ./...` 全部通過（既有 `TestLoad_DefaultTimeout` 失敗為 pre-existing 15m vs 2h 不一致，與本改動無關）
+- [x] 10.5 實機驗證：
+  - [x] 10.5.1 既有 `.tgconn/` 存在 → 啟動後資料搬到中央位置，麵包屑留存
+  - [x] 10.5.2 無 `.tgconn/` 啟動 → 直接用中央位置，不報錯
+  - [x] 10.5.3 跑 `tgconn clean --all --dry-run` → 只列不刪
+  - [x] 10.5.4 跑 `tgconn clean --history` → 出現確認 prompt（yes/no 兩條路徑都跑過）
+  - [x] 10.5.5 voice 轉錄完成後 `.wav` / `.txt` 確實消失

@@ -96,6 +96,59 @@ func TestLoad_DefaultExecMode(t *testing.T) {
 	}
 }
 
+func TestLoad_DefaultRetention(t *testing.T) {
+	defer reset()
+	viper.Set("token", "tok")
+	viper.Set("provider", "claude")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.TmpRetentionHours != 24 {
+		t.Errorf("TmpRetentionHours default = %d, want 24", cfg.TmpRetentionHours)
+	}
+	if cfg.LogRetentionDays != 30 {
+		t.Errorf("LogRetentionDays default = %d, want 30", cfg.LogRetentionDays)
+	}
+	if cfg.HistoryMaxEntries != 100 {
+		t.Errorf("HistoryMaxEntries default = %d, want 100", cfg.HistoryMaxEntries)
+	}
+}
+
+func TestLoad_ExplicitZeroPreserved(t *testing.T) {
+	defer reset()
+	viper.Set("token", "tok")
+	viper.Set("provider", "claude")
+	viper.Set("log_retention_days", 0)
+	viper.Set("history_max_entries", 0)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.LogRetentionDays != 0 {
+		t.Errorf("explicit 0 should be preserved, got %d", cfg.LogRetentionDays)
+	}
+	if cfg.HistoryMaxEntries != 0 {
+		t.Errorf("explicit 0 should be preserved, got %d", cfg.HistoryMaxEntries)
+	}
+}
+
+func TestValidate_NegativeRetention(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  Config
+	}{
+		{"tmp negative", Config{Token: "t", Provider: "claude", AllowedChats: []int64{1}, TmpRetentionHours: -1}},
+		{"logs negative", Config{Token: "t", Provider: "claude", AllowedChats: []int64{1}, LogRetentionDays: -1}},
+		{"history negative", Config{Token: "t", Provider: "claude", AllowedChats: []int64{1}, HistoryMaxEntries: -1}},
+	}
+	for _, c := range cases {
+		if err := c.cfg.Validate(); err == nil {
+			t.Errorf("%s: expected validation error", c.name)
+		}
+	}
+}
+
 func TestLoad_ParseAllowedChats_CSV(t *testing.T) {
 	defer reset()
 	viper.Set("allowed_chats", []string{"111", "222", "333"})

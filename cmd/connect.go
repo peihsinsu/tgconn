@@ -136,6 +136,21 @@ func runConnect(_ *cobra.Command, _ []string) error {
 	}
 	slog.Info("storage ready", "project_dir", projectDir)
 
+	cleanupStats := storage.RunStartup(storage.StartupConfig{
+		ProjectDir:        projectDir,
+		TmpRetentionHours: cfg.TmpRetentionHours,
+		LogRetentionDays:  cfg.LogRetentionDays,
+		HistoryMaxEntries: cfg.HistoryMaxEntries,
+	})
+	slog.Info("storage cleanup complete",
+		"tmp_removed", cleanupStats.TmpFilesRemoved,
+		"tmp_bytes_freed", cleanupStats.TmpBytesFreed,
+		"logs_removed", cleanupStats.LogFilesRemoved,
+		"logs_bytes_freed", cleanupStats.LogBytesFreed,
+		"history_compacted", cleanupStats.HistoryFilesCompacted,
+		"history_entries_removed", cleanupStats.HistoryEntriesRemoved,
+	)
+
 	rec, err := recorder.New(projectDir)
 	if err != nil {
 		return err
