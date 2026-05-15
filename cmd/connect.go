@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -14,6 +15,7 @@ import (
 	"github.com/cx009/tgconn/internal/config"
 	"github.com/cx009/tgconn/internal/provider"
 	"github.com/cx009/tgconn/internal/recorder"
+	"github.com/cx009/tgconn/internal/storage"
 	"github.com/cx009/tgconn/internal/transcriber"
 )
 
@@ -115,13 +117,47 @@ func runConnect(_ *cobra.Command, _ []string) error {
 		slog.Info("transcription backend ready", "backend", backend.String(), "model", model)
 	}
 
-	rec, err := recorder.New()
+	resolver, err := storage.NewResolver()
+	if err != nil {
+		return fmt.Errorf("resolve storage paths: %w", err)
+	}
+	projectDir := resolver.ProjectDir()
+
+	moved, err := storage.MigrateLegacy(resolver.LegacyDir(), projectDir)
+	if err != nil {
+		return fmt.Errorf("migrate legacy storage: %w", err)
+	}
+	if moved {
+		slog.Info("migrated legacy .tgconn/ to centralized storage",
+			"from", resolver.LegacyDir(), "to", projectDir)
+	}
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		return fmt.Errorf("create project storage dir: %w", err)
+	}
+	slog.Info("storage ready", "project_dir", projectDir)
+
+	cleanupStats := storage.RunStartup(storage.StartupConfig{
+		ProjectDir:        projectDir,
+		TmpRetentionHours: cfg.TmpRetentionHours,
+		LogRetentionDays:  cfg.LogRetentionDays,
+		HistoryMaxEntries: cfg.HistoryMaxEntries,
+	})
+	slog.Info("storage cleanup complete",
+		"tmp_removed", cleanupStats.TmpFilesRemoved,
+		"tmp_bytes_freed", cleanupStats.TmpBytesFreed,
+		"logs_removed", cleanupStats.LogFilesRemoved,
+		"logs_bytes_freed", cleanupStats.LogBytesFreed,
+		"history_compacted", cleanupStats.HistoryFilesCompacted,
+		"history_entries_removed", cleanupStats.HistoryEntriesRemoved,
+	)
+
+	rec, err := recorder.New(projectDir)
 	if err != nil {
 		return err
 	}
-	slog.Info("execution recorder ready", "log_dir", ".tgconn")
+	slog.Info("execution recorder ready", "log_dir", projectDir)
 
-	b, err := bot.New(cfg, p, rec)
+	b, err := bot.New(cfg, p, rec, projectDir)
 	if err != nil {
 		return err
 	}

@@ -30,23 +30,37 @@ type Config struct {
 	MaxJobs         int    // max concurrent regular jobs per bot (0 = unlimited)
 	MaxCronJobs     int    // max concurrent cron executions (0 = unlimited)
 	Language        string // BCP 47 language tag for bot messages; empty = "en"
+
+	TmpRetentionHours int // hours before tmp/ files are eligible for deletion (default 24)
+	LogRetentionDays  int // days before daily *.jsonl logs are deleted; 0 disables (default 30)
+	HistoryMaxEntries int // max entries per history_<chatID>.jsonl before startup compaction; 0 disables (default 100)
 }
 
 func Load() (*Config, error) {
+	// Storage retention defaults — setting these via viper means an explicit
+	// `0` in the config file is preserved (used to disable retention) while an
+	// unset key falls back to the default.
+	viper.SetDefault("tmp_retention_hours", 24)
+	viper.SetDefault("log_retention_days", 30)
+	viper.SetDefault("history_max_entries", 100)
+
 	cfg := &Config{
-		Token:           viper.GetString("token"),
-		Provider:        viper.GetString("provider"),
-		Timeout:         time.Duration(viper.GetInt("timeout")) * time.Second,
-		Debug:           viper.GetBool("debug"),
-		HistorySize:     viper.GetInt("history_size"),
-		EnableVoice:     viper.GetBool("enable_voice"),
-		WhisperBackend:  strings.TrimSpace(viper.GetString("whisper_backend")),
-		WhisperModel:    strings.TrimSpace(viper.GetString("whisper_model")),
-		ExecMode:        viper.GetString("exec_mode"),
-		AnthropicAPIKey: viper.GetString("anthropic_api_key"),
-		MaxJobs:         viper.GetInt("max_jobs"),
-		MaxCronJobs:     viper.GetInt("max_cron_jobs"),
-		Language:        viper.GetString("language"),
+		Token:             viper.GetString("token"),
+		Provider:          viper.GetString("provider"),
+		Timeout:           time.Duration(viper.GetInt("timeout")) * time.Second,
+		Debug:             viper.GetBool("debug"),
+		HistorySize:       viper.GetInt("history_size"),
+		EnableVoice:       viper.GetBool("enable_voice"),
+		WhisperBackend:    strings.TrimSpace(viper.GetString("whisper_backend")),
+		WhisperModel:      strings.TrimSpace(viper.GetString("whisper_model")),
+		ExecMode:          viper.GetString("exec_mode"),
+		AnthropicAPIKey:   viper.GetString("anthropic_api_key"),
+		MaxJobs:           viper.GetInt("max_jobs"),
+		MaxCronJobs:       viper.GetInt("max_cron_jobs"),
+		Language:          viper.GetString("language"),
+		TmpRetentionHours: viper.GetInt("tmp_retention_hours"),
+		LogRetentionDays:  viper.GetInt("log_retention_days"),
+		HistoryMaxEntries: viper.GetInt("history_max_entries"),
 	}
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 2 * time.Hour
@@ -84,6 +98,15 @@ func (c *Config) Validate() error {
 	case ExecModeAuto, ExecModeAsk, ExecModeSafe, "":
 	default:
 		return fmt.Errorf("invalid exec-mode %q; valid values: auto, ask, safe", c.ExecMode)
+	}
+	if c.TmpRetentionHours < 0 {
+		return fmt.Errorf("tmp_retention_hours must be >= 0, got %d", c.TmpRetentionHours)
+	}
+	if c.LogRetentionDays < 0 {
+		return fmt.Errorf("log_retention_days must be >= 0, got %d", c.LogRetentionDays)
+	}
+	if c.HistoryMaxEntries < 0 {
+		return fmt.Errorf("history_max_entries must be >= 0, got %d", c.HistoryMaxEntries)
 	}
 	return nil
 }

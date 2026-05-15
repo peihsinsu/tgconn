@@ -9,7 +9,10 @@ import (
 func tempRecorder(t *testing.T) (*Recorder, func()) {
 	t.Helper()
 	dir := t.TempDir()
-	r := &Recorder{dir: dir}
+	r, err := New(dir)
+	if err != nil {
+		t.Fatalf("New(%q): %v", dir, err)
+	}
 	return r, func() { os.RemoveAll(dir) }
 }
 

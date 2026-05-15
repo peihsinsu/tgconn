@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -69,7 +70,9 @@ type Bot struct {
 	cronCancel context.CancelFunc
 }
 
-func New(cfg *config.Config, p provider.Provider, rec *recorder.Recorder) (*Bot, error) {
+// New constructs a Bot. projectDir is the per-project storage root
+// (~/.tgconn/projects/<encoded-cwd>/); tmp downloads and cron jobs live below it.
+func New(cfg *config.Config, p provider.Provider, rec *recorder.Recorder, projectDir string) (*Bot, error) {
 	api, err := tgbotapi.NewBotAPI(cfg.Token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to Telegram: %w", err)
@@ -84,7 +87,7 @@ func New(cfg *config.Config, p provider.Provider, rec *recorder.Recorder) (*Bot,
 		config:           cfg,
 		msgs:             i18n.Get(cfg.Language),
 		recorder:         rec,
-		dl:               downloader.New(api, ".tgconn/tmp"),
+		dl:               downloader.New(api, filepath.Join(projectDir, "tmp")),
 		jobs:             make(map[int]*job),
 		startTime:        time.Now(),
 		hostname:         hostname,
@@ -94,7 +97,7 @@ func New(cfg *config.Config, p provider.Provider, rec *recorder.Recorder) (*Bot,
 		cronCancel:       cronCancel,
 	}
 
-	mgr, err := cronjob.New(".tgconn/cron", b.triggerCronJob)
+	mgr, err := cronjob.New(filepath.Join(projectDir, "cron"), b.triggerCronJob)
 	if err != nil {
 		cronCancel()
 		return nil, fmt.Errorf("failed to init cron manager: %w", err)

@@ -30,10 +30,47 @@ tgconn --provider claude connect --allow-chat 123456789
 tgconn config init              # interactive setup (token, defaults)
 tgconn config show              # print active configuration
 
+# Storage cleanup (per-project)
+tgconn clean --tmp                # delete all tmp downloads
+tgconn clean --logs               # delete daily *.jsonl (history excluded)
+tgconn clean --history            # delete history_*.jsonl (interactive confirm)
+tgconn clean --all --dry-run      # preview without deleting
+tgconn clean --all --yes          # wipe everything, no prompt
+
 # Misc
 tgconn version
 tgconn --help
 ```
+
+## Storage Layout
+
+All per-project state lives at `~/.tgconn/projects/<encoded-cwd>/`, where
+`<encoded-cwd>` is the absolute working directory with every `/` replaced by `-`
+(Claude Code's encoding scheme). Example for this repo:
+
+```
+~/.tgconn/projects/-Users-charles-work-charles-tgconn/
+├── YYYY-MM-DD.jsonl         # daily audit log
+├── history_<chatID>.jsonl   # per-chat prompt-injection cache
+├── tmp/<chatID>/            # downloaded photos / docs / voice
+└── cron/
+    ├── <jobID>.json         # persisted cron job definitions
+    └── YYYY-MM-DD.jsonl     # cron execution audit log
+```
+
+On startup tgconn auto-migrates any legacy `<cwd>/.tgconn/` into the centralized
+location, leaving a `MOVED_TO_<encoded>.txt` breadcrumb in the original spot.
+
+### Retention (runs once at startup)
+
+| Key | Default | Behavior |
+|-----|---------|----------|
+| `tmp_retention_hours` | `24` | Delete `tmp/` files older than N hours; empty `<chatID>/` subdirs are also removed |
+| `log_retention_days` | `30` | Delete daily `*.jsonl` (project root + `cron/`) older than N days; `0` disables |
+| `history_max_entries` | `100` | Trim each `history_*.jsonl` to its last N entries; `0` disables compaction |
+
+`history_*.jsonl` and `cron/<jobID>.json` are NEVER touched by `log_retention_days`.
+History is managed only by `history_max_entries` (startup) or `tgconn clean --history` (manual).
 
 ## Configuration
 
@@ -44,6 +81,9 @@ Priority order: CLI flag → environment variable → config file (`~/.tgconn/co
 | `token` | `TELEGRAM_BOT_TOKEN` | Telegram bot token |
 | `provider` | `TGCONN_PROVIDER` | Default provider (claude/codex/gemini) |
 | `allowed_chats` | `TGCONN_ALLOWED_CHATS` | Comma-separated chat IDs whitelist |
+| `tmp_retention_hours` | `TGCONN_TMP_RETENTION_HOURS` | Hours before tmp/ files are deleted (default 24) |
+| `log_retention_days` | `TGCONN_LOG_RETENTION_DAYS` | Days before daily logs are deleted; 0 disables (default 30) |
+| `history_max_entries` | `TGCONN_HISTORY_MAX_ENTRIES` | Max entries per history file before startup compaction; 0 disables (default 100) |
 
 ## Tech Stack
 
