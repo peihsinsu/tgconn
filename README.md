@@ -138,6 +138,9 @@ Priority order: **CLI flag > environment variable > config file**
 | `max_jobs`          | —                      | `--max-jobs`       | Max concurrent regular jobs (default: 0 = unlimited) |
 | `max_cron_jobs`     | —                      | `--max-cron-jobs`  | Max concurrent cron executions (default: 0 = unlimited) |
 | `language`          | —                      | —                  | Bot message language: `en` (default), `zh-TW` |
+| `tmp_retention_hours` | `TGCONN_TMP_RETENTION_HOURS` | —          | Hours before tmp/ files are deleted (default: 24) |
+| `log_retention_days`  | `TGCONN_LOG_RETENTION_DAYS`  | —          | Days before daily `*.jsonl` logs are deleted; `0` disables (default: 30) |
+| `history_max_entries` | `TGCONN_HISTORY_MAX_ENTRIES` | —          | Max entries per `history_*.jsonl` before startup compaction; `0` disables (default: 100) |
 | `debug`             | —                      | `--debug`          | Enable verbose debug logging |
 
 ### Config File
@@ -156,6 +159,9 @@ anthropic_api_key: ""   # leave empty to use ~/.claude session
 max_jobs: 0             # max concurrent regular jobs (0 = unlimited)
 max_cron_jobs: 0        # max concurrent cron executions (0 = unlimited)
 language: en            # bot message language: en (default), zh-TW
+tmp_retention_hours: 24    # hours before tmp/ files are deleted
+log_retention_days: 30     # 0 disables daily-log retention
+history_max_entries: 100   # 0 disables history compaction
 ```
 
 ---
@@ -242,7 +248,7 @@ Schedule recurring LLM tasks using standard cron expressions. Tasks fire unatten
 /cron del abc123
 ```
 
-Tasks are persisted to `.tgconn/cron/<id>.json` and automatically reloaded on restart.
+Tasks are persisted to `~/.tgconn/projects/<encoded-cwd>/cron/<id>.json` and automatically reloaded on restart. See [Storage](#storage) for the path encoding scheme.
 
 ---
 
@@ -271,7 +277,7 @@ Follow-up          → Claude has full context of everything above
 | Type | Behaviour |
 |------|-----------|
 | Text | Forwarded directly to the LLM |
-| Photo | Downloaded to `.tgconn/tmp/<chat_id>/`; path + caption injected into prompt |
+| Photo | Downloaded to `~/.tgconn/projects/<encoded-cwd>/tmp/<chat_id>/`; path + caption injected into prompt |
 | Document / File | Downloaded (≤ 20 MB); path, filename, and caption injected into prompt |
 | Voice message | Transcribed with whisper.cpp or openai-whisper (requires `--enable-voice`); transcript forwarded as text |
 | Sticker | Friendly unsupported-type reply (emoji included) |
@@ -350,7 +356,7 @@ When you send a voice message in Telegram:
 ```
 Hold mic button → record → send
     ↓
-tgconn downloads the .ogg (Opus) file to .tgconn/tmp/<chat_id>/
+tgconn downloads the .ogg (Opus) file to ~/.tgconn/projects/<encoded-cwd>/tmp/<chat_id>/
     ↓
 [whisper.cpp]  ffmpeg converts .ogg → 16kHz mono WAV
                whisper-cli -m <model.bin> -f <wav> -otxt
@@ -418,18 +424,45 @@ make docker-run-session ALLOW_CHAT=123456789   # run with session mount (host on
 
 ---
 
-## Execution Log
+## Storage
 
-Every message handled is appended to a daily JSONL file in `.tgconn/` inside the current working directory:
+All per-project state lives under `~/.tgconn/projects/<encoded-cwd>/`, where `<encoded-cwd>` is the absolute working directory with every `/` replaced by `-` (Claude Code's encoding scheme). For example `/Users/alice/myproject` → `~/.tgconn/projects/-Users-alice-myproject/`.
 
 ```
-.tgconn/
+~/.tgconn/projects/-Users-alice-myproject/
 ├── 2026-05-01.jsonl             ← daily audit log (all messages)
 ├── history_123456789.jsonl      ← per-chat history (successful exchanges only)
+├── tmp/<chat_id>/               ← downloaded photos / docs / voice
 └── cron/
     ├── abc123.json              ← persisted cron task definition
     └── 2026-05-01.jsonl         ← cron execution log (daily, one entry per firing)
 ```
+
+### Auto-migration
+
+On first startup, tgconn moves any legacy `<cwd>/.tgconn/` into the centralized location automatically, leaving a `MOVED_TO_<encoded>.txt` breadcrumb in the original spot so you can trace where the data went.
+
+### Retention (runs once at startup)
+
+| Setting | Default | Behavior |
+|---------|---------|----------|
+| `tmp_retention_hours` | `24` | Delete `tmp/` files older than N hours; empty `<chat_id>/` subdirs are also removed |
+| `log_retention_days` | `30` | Delete daily `*.jsonl` (project root + `cron/`) older than N days; `0` disables |
+| `history_max_entries` | `100` | Trim each `history_*.jsonl` to its last N entries; `0` disables compaction |
+
+`history_*.jsonl` and `cron/<job_id>.json` are **never** removed by `log_retention_days` — history is governed by `history_max_entries` (startup) or `tgconn clean --history` (manual); cron job definitions are managed only via `/cron del`.
+
+### Manual cleanup
+
+```bash
+tgconn clean --tmp                # delete all tmp downloads
+tgconn clean --logs               # delete daily *.jsonl (history excluded)
+tgconn clean --history            # delete history_*.jsonl (interactive yes/no)
+tgconn clean --all --dry-run      # preview everything without deleting
+tgconn clean --all --yes          # wipe everything, no prompt
+```
+
+`--history` and `--all` ask for `yes` confirmation unless `--yes` or `--dry-run` is set.
 
 ---
 
@@ -490,7 +523,9 @@ tgconn/
 ├── cmd/
 │   ├── root.go              root cobra command, viper init
 │   ├── connect.go           `connect` subcommand — starts the bot
+│   ├── clean.go             `clean` subcommand — manual storage cleanup
 │   ├── config.go            `config init` / `config show`
+│   ├── init.go              `init` subcommand — first-time setup wizard
 │   └── version.go           `version` subcommand
 └── internal/
     ├── bot/
@@ -498,9 +533,9 @@ tgconn/
     ├── config/
     │   └── config.go        Config struct, Load(), Validate()
     ├── cronjob/
-    │   └── manager.go       Cron scheduler, job persistence (.tgconn/cron/)
+    │   └── manager.go       Cron scheduler + job persistence (path injected by bot)
     ├── downloader/
-    │   └── downloader.go    Telegram file download to .tgconn/tmp/
+    │   └── downloader.go    Telegram file download (base dir injected by bot)
     ├── provider/
     │   ├── provider.go      Provider interface + factory
     │   ├── approval.go      ApprovalFunc type + context helpers
@@ -512,6 +547,10 @@ tgconn/
     │   └── recorder.go      Daily JSONL audit log + per-chat history + cron execution log
     ├── session/
     │   └── session.go       Persistent interactive Claude session (stream-json)
+    ├── storage/
+    │   ├── resolver.go      Resolves ~/.tgconn/projects/<encoded-cwd>/ paths
+    │   ├── migrate.go       Auto-migrates legacy <cwd>/.tgconn/ to centralized location
+    │   └── cleanup.go       Startup retention (tmp, daily logs, history compaction)
     └── transcriber/
         └── transcriber.go   Whisper CLI wrapper for voice transcription
 ```
