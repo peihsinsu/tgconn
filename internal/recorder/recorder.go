@@ -11,9 +11,6 @@ import (
 	"time"
 )
 
-const logDir = ".tgconn"
-const cronLogDir = ".tgconn/cron"
-
 type Entry struct {
 	Time      time.Time `json:"time"`
 	ChatID    int64     `json:"chat_id"`
@@ -32,8 +29,9 @@ type Exchange struct {
 }
 
 type Recorder struct {
-	mu  sync.Mutex
-	dir string
+	mu      sync.Mutex
+	dir     string
+	cronDir string
 }
 
 // CronEntry records a single cron job execution.
@@ -48,14 +46,17 @@ type CronEntry struct {
 	ElapsedMs int64     `json:"elapsed_ms"`
 }
 
-func New() (*Recorder, error) {
-	if err := os.MkdirAll(logDir, 0755); err != nil {
-		return nil, fmt.Errorf("cannot create log directory %s: %w", logDir, err)
+// New creates a Recorder rooted at baseDir. Daily and per-chat history logs go
+// directly under baseDir; cron execution logs live in baseDir/cron/.
+func New(baseDir string) (*Recorder, error) {
+	cronDir := filepath.Join(baseDir, "cron")
+	if err := os.MkdirAll(baseDir, 0755); err != nil {
+		return nil, fmt.Errorf("cannot create log directory %s: %w", baseDir, err)
 	}
-	if err := os.MkdirAll(cronLogDir, 0755); err != nil {
-		return nil, fmt.Errorf("cannot create cron log directory %s: %w", cronLogDir, err)
+	if err := os.MkdirAll(cronDir, 0755); err != nil {
+		return nil, fmt.Errorf("cannot create cron log directory %s: %w", cronDir, err)
 	}
-	return &Recorder{dir: logDir}, nil
+	return &Recorder{dir: baseDir, cronDir: cronDir}, nil
 }
 
 // LogCron writes a cron execution entry to the separate daily cron log.
@@ -63,7 +64,7 @@ func (r *Recorder) LogCron(e CronEntry) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	filename := filepath.Join(cronLogDir, e.Time.Format("2006-01-02")+".jsonl")
+	filename := filepath.Join(r.cronDir, e.Time.Format("2006-01-02")+".jsonl")
 	if err := appendJSON(filename, e); err != nil {
 		return fmt.Errorf("cannot write cron log: %w", err)
 	}

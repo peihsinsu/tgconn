@@ -81,6 +81,7 @@ func transcribeOpenAI(ctx context.Context, audioPath, model string) (string, err
 	dir := filepath.Dir(audioPath)
 	base := strings.TrimSuffix(filepath.Base(audioPath), filepath.Ext(audioPath))
 	outFile := filepath.Join(dir, base+".txt")
+	defer os.Remove(outFile)
 
 	args := []string{audioPath,
 		"--output_format", "txt",
@@ -115,6 +116,7 @@ func transcribeWhisperCpp(ctx context.Context, audioPath, model string) (string,
 	base := strings.TrimSuffix(filepath.Base(wavPath), filepath.Ext(wavPath))
 	outBase := filepath.Join(dir, base)
 	outFile := outBase + ".txt"
+	defer os.Remove(outFile)
 
 	cmd := exec.CommandContext(ctx, "whisper-cli",
 		"-m", modelPath,

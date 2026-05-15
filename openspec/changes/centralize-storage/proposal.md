@@ -21,7 +21,7 @@
   - 子目錄結構：`<encoded>/tmp/<chatID>/`、`<encoded>/cron/`、daily logs 與 history 平鋪在根
 - **自動遷移**：啟動時若偵測到 `<cwd>/.tgconn/` 存在 → 整個搬到中央位置，並在原處留下
   `.tgconn/MOVED_TO_<新路徑>.txt` 麵包屑檔案
-- **新增 `internal/paths/` package**：負責 cwd 編碼與路徑解析
+- **新增 `internal/storage/` package**：負責 cwd 編碼、路徑解析、migration（Part 1）、retention 清理（Part 2）
 - **依賴注入**：`recorder.New`、`downloader.New`、`cronjob.New` 改為接收 base dir 參數
 - **Retention 清理（啟動時執行一次）**：
   - `tmp/`：刪除 mtime 超過 `tmp_retention_hours`（預設 24h）的檔案
@@ -37,11 +37,11 @@
 
 - **Affected specs**: `storage-management`（新建）
 - **Affected code**:
-  - `internal/paths/`（新增）
+  - `internal/storage/`（新增；含 `resolver.go`、`migrate.go`，Part 2 再加 `cleanup.go`）
   - `internal/recorder/recorder.go`：移除 const `logDir` / `cronLogDir`，改為 struct field；`New` 接收 baseDir
   - `internal/downloader/downloader.go`：baseDir 由呼叫方注入（已是此設計，只是路徑來源改變）
   - `internal/cronjob/manager.go`：dir 已是參數（不需改）
-  - `internal/bot/bot.go`：`New` 接收 paths，改傳給 downloader / cronjob
+  - `internal/bot/bot.go`：`New` 接收 `projectDir`，改傳給 downloader / cronjob
   - `internal/transcriber/transcriber.go`：voice intermediate 檔處理完立刻刪
   - `internal/config/config.go`：新增 `TmpRetentionHours` / `LogRetentionDays` / `HistoryMaxEntries`
   - `cmd/connect.go`：啟動時呼叫 migration + cleanup
